@@ -399,6 +399,8 @@ impl MembershipService {
             interval.tick().await;
             let now = Instant::now();
 
+            let mut messages_to_broadcast = Vec::new();
+
             for mut entry in self.members.iter_mut() {
                 let member = entry.value_mut();
 
@@ -425,8 +427,7 @@ impl MembershipService {
                                     incarnation: member.incarnation,
                                 };
 
-                                self.broadcast_message(msg).await;
-                                drop(entry);
+                                messages_to_broadcast.push(msg);
                             }
                         }
 
@@ -458,6 +459,10 @@ impl MembershipService {
                 } else {
                     member.last_seen = Some(now);
                 }
+            }
+
+            for msg in messages_to_broadcast {
+                self.broadcast_message(msg).await;
             }
         }
     }
