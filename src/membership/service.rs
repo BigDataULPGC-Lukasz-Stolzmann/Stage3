@@ -463,11 +463,6 @@ impl MembershipService {
                                 );
 
                                 member.state = NodeState::Dead;
-
-                                tracing::info!(
-                                    "Cluster size now: {} alive nodes",
-                                    self.get_alive_members().len()
-                                );
                             }
                         }
 
