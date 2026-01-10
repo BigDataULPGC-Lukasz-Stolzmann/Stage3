@@ -475,19 +475,20 @@ impl MembershipService {
 
     async fn broadcast_message(&self, msg: GossipMessage) {
         if let Ok(encoded) = bincode::serialize(&msg) {
-            for entry in self.members.iter() {
-                let member = entry.value();
-
-                if member.id == self.local_node.id {
-                    continue;
-                }
-
-                if member.state == NodeState::Alive
-                    && let Err(e) = self.socket.send_to(&encoded, member.addr).await
-                {
-                    tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
-                }
-            }
+            println!("Tutaj sie zrobi broadcast do alive");
+            // for entry in self.members.iter() {
+            //     let member = entry.value();
+            //
+            //     if member.id == self.local_node.id {
+            //         continue;
+            //     }
+            //
+            //     if member.state == NodeState::Alive
+            //         && let Err(e) = self.socket.send_to(&encoded, member.addr).await
+            //     {
+            //         tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
+            //     }
+            // }
         }
     }
 }
