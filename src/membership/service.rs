@@ -208,7 +208,7 @@ impl MembershipService {
                 member.incarnation = from_incarnation;
             }
         } else {
-            tracing::info!("Discovered new member via piang: {:?} at {}", from, src);
+            tracing::info!("Discovered new member via ping: {:?} at {}", from, src);
 
             let new_node = Node {
                 id: from.clone(),
@@ -255,12 +255,15 @@ impl MembershipService {
             members.len()
         );
 
-        if let Some(mut member) = self.members.get_mut(&from)
-            && from_incarnation > member.incarnation
-        {
-            member.incarnation = from_incarnation;
-            member.last_seen = Some(Instant::now());
+        if let Some(mut member) = self.members.get_mut(&from) {
+            if from_incarnation > member.incarnation {
+                // a moze tu tez stan noda sie modyfikuje?
+                member.incarnation = from_incarnation;
+                member.last_seen = Some(Instant::now());
+            }
         }
+
+        // czy tu tez sie dodaje node jak nie bylo? czy w ack jest discovery node?
 
         for member in members {
             self.merge_member(member).await;
@@ -287,7 +290,11 @@ impl MembershipService {
                     && new_member.state == NodeState::Alive
                     && existing.state == NodeState::Suspect
                 {
-                    tracing::info!("{:?} refuted suspiction", new_member.id);
+                    tracing::info!(
+                        "Node {:?} at {} refuted suspiction",
+                        new_member.id,
+                        new_member.addr
+                    );
                     existing.state = NodeState::Alive;
                     existing.last_seen = Some(Instant::now());
                 }
@@ -313,9 +320,9 @@ impl MembershipService {
             match self.members.get_mut(&node_id) {
                 Some(mut existing) => {
                     if incarnation > existing.incarnation {
-                        if node_id == self.local_node.id {
+                        if existing.id == self.local_node.id {
                             tracing::info!(
-                                "Self-defense: Node{:?} at {} - refuting suspiction",
+                                "Self-defense: Node {:?} at {} - refuting suspiction",
                                 node_id,
                                 self.local_node.addr
                             );
@@ -420,6 +427,10 @@ impl MembershipService {
                     continue;
                 }
 
+                if member.state == NodeState::Dead {
+                    continue;
+                }
+
                 if let Some(last_seen) = member.last_seen {
                     let elapsed = now.duration_since(last_seen);
 
@@ -475,20 +486,19 @@ impl MembershipService {
 
     async fn broadcast_message(&self, msg: GossipMessage) {
         if let Ok(encoded) = bincode::serialize(&msg) {
-            println!("Tutaj sie zrobi broadcast do alive");
-            // for entry in self.members.iter() {
-            //     let member = entry.value();
-            //
-            //     if member.id == self.local_node.id {
-            //         continue;
-            //     }
-            //
-            //     if member.state == NodeState::Alive
-            //         && let Err(e) = self.socket.send_to(&encoded, member.addr).await
-            //     {
-            //         tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
-            //     }
-            // }
+            for entry in self.members.iter() {
+                let member = entry.value();
+
+                if member.id == self.local_node.id {
+                    continue;
+                }
+
+                if member.state == NodeState::Alive
+                    && let Err(e) = self.socket.send_to(&encoded, member.addr).await
+                {
+                    tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
+                }
+            }
         }
     }
 }
