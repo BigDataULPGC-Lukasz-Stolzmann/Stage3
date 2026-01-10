@@ -59,21 +59,21 @@ impl MembershipService {
     pub async fn start(self: Arc<Self>) {
         tracing::info!("Starting membership service...");
 
-        let gossip_handle = {
+        let _gossip_handle = {
             let service = self.clone();
             tokio::spawn(async move {
                 service.gossip_loop().await;
             })
         };
 
-        let receive_handle = {
+        let _receive_handle = {
             let service = self.clone();
             tokio::spawn(async move {
                 service.receive_loop().await;
             })
         };
 
-        let failure_detection_handle = {
+        let _failure_detection_handle = {
             let service = self.clone();
             tokio::spawn(async move {
                 service.failure_detection_loop().await;
@@ -294,10 +294,74 @@ impl MembershipService {
     }
 
     async fn handle_suspect(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
+        match self.members.get_mut(&node_id) {
+            Some(mut existing) => {
+                if incarnation > existing.incarnation {
+                    if node_id == self.local_node.id {
+                        tracing::info!("Node {:?} at {} alive", existing.id, existing.addr);
+                        let my_incarnation = {
+                            let mut inc = self.incarnation.write().await;
+                            *inc += 1;
+                            *inc
+                        };
+
+                        let msg = GossipMessage::Alive {
+                            node_id: node_id.clone(),
+                            incarnation: my_incarnation,
+                        };
+
+                        self.broadcast_message(msg).await;
+
+                        existing.incarnation = my_incarnation;
+                        existing.state = NodeState::Alive;
+                        existing.last_seen = Some(Instant::now());
+                    } else {
+                        tracing::info!("Node {:?} at {} suspected", existing.id, existing.addr);
+                        existing.state = NodeState::Suspect;
+                        existing.incarnation = incarnation;
+                        existing.last_seen = Some(Instant::now());
+                    }
+                }
+            }
+            None => {
+                tracing::debug!("Suspected node {:?} doesn't exist", node_id);
+            }
+        }
+
         Ok(())
     }
 
     async fn handle_alive(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
+        match self.members.get_mut(&node_id) {
+            Some(mut existing) => {
+                if incarnation > existing.incarnation {
+                    tracing::info!(
+                        "Node {:?} at {} is now Alive (inc={})",
+                        existing.id,
+                        existing.addr,
+                        incarnation
+                    );
+                    existing.state = NodeState::Alive;
+                    existing.incarnation = incarnation;
+                    existing.last_seen = Some(Instant::now());
+                } else if incarnation == existing.incarnation
+                    && existing.state == NodeState::Suspect
+                {
+                    tracing::info!(
+                        "Node {:?} at {} successfully refuted suspiction",
+                        existing.id,
+                        existing.addr,
+                    );
+                    existing.state = NodeState::Alive;
+                    existing.incarnation = incarnation;
+                    existing.last_seen = Some(Instant::now());
+                }
+            }
+            None => {
+                tracing::debug!("Alive message for unknown node {:?}", node_id);
+            }
+        }
+
         Ok(())
     }
 
