@@ -275,6 +275,10 @@ impl MembershipService {
     async fn merge_member(&self, new_member: Node) {
         match self.members.get_mut(&new_member.id) {
             Some(mut existing) => {
+                if existing.state == NodeState::Dead {
+                    tracing::debug!("Ignoring update for dead node {:?}", existing.id);
+                    return;
+                }
                 if new_member.incarnation > existing.incarnation {
                     tracing::debug!(
                         "Updating {:?}: inc {} -> {}",
