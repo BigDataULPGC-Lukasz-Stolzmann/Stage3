@@ -432,7 +432,7 @@ impl MembershipService {
 
                         NodeState::Suspect => {
                             if elapsed > DEAD_TIMEOUT {
-                                tracing::error!(
+                                tracing::debug!(
                                     "Node {:?} declared DEAD (no contact for {:?})",
                                     member.id,
                                     elapsed
@@ -447,7 +447,13 @@ impl MembershipService {
                             }
                         }
 
-                        NodeState::Dead => {}
+                        NodeState::Dead => {
+                            tracing::debug!(
+                                "Node {:?} DEAD (no concact for {:?})",
+                                member.id,
+                                elapsed
+                            );
+                        }
                     }
                 } else {
                     member.last_seen = Some(now);
@@ -465,10 +471,10 @@ impl MembershipService {
                     continue;
                 }
 
-                if member.state == NodeState::Alive {
-                    if let Err(e) = self.socket.send_to(&encoded, member.addr).await {
-                        tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
-                    }
+                if member.state == NodeState::Alive
+                    && let Err(e) = self.socket.send_to(&encoded, member.addr).await
+                {
+                    tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
                 }
             }
         }
