@@ -10,6 +10,7 @@ use tracing::info;
 use super::types::{GossipMessage, Node, NodeId, NodeState};
 
 const GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
+const FAILURE_DETECTION_INTERVAL: Duration = Duration::from_secs(2);
 const SUSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -35,7 +36,7 @@ impl MembershipService {
         let members = Arc::new(DashMap::new());
         members.insert(local_node.id.clone(), local_node.clone());
         if !seed_nodes.is_empty() {
-            info!("Joining cluster via {} seed nodes", seed_nodes.len());
+            info!("Joining cluster via {} seed node(s)", seed_nodes.len());
 
             for seed_node in seed_nodes.iter() {
                 let msg = GossipMessage::Join {
@@ -92,7 +93,7 @@ impl MembershipService {
     }
 
     async fn gossip_loop(self: Arc<Self>) {
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        let mut interval = tokio::time::interval(GOSSIP_INTERVAL);
 
         loop {
             interval.tick().await;
@@ -127,6 +128,8 @@ impl MembershipService {
                 } else {
                     tracing::debug!("Sent ping to {:?}", target.id);
                 }
+            } else {
+                tracing::error!("Failed to serialize GossipMessage::Ping");
             }
         }
     }
@@ -240,11 +243,11 @@ impl MembershipService {
             members.len()
         );
 
-        if let Some(mut member) = self.members.get_mut(&from) {
-            if from_incarnation > member.incarnation {
-                member.incarnation = from_incarnation;
-                member.last_seen = Some(Instant::now());
-            }
+        if let Some(mut member) = self.members.get_mut(&from)
+            && from_incarnation > member.incarnation
+        {
+            member.incarnation = from_incarnation;
+            member.last_seen = Some(Instant::now());
         }
 
         for member in members {
@@ -268,13 +271,13 @@ impl MembershipService {
                     existing.state = new_member.state;
                     existing.incarnation = new_member.incarnation;
                     existing.last_seen = Some(Instant::now());
-                } else if new_member.incarnation == existing.incarnation {
-                    if new_member.state == NodeState::Alive && existing.state == NodeState::Suspect
-                    {
-                        tracing::info!("{:?} refuted suspiction", new_member.id);
-                        existing.state = NodeState::Alive;
-                        existing.last_seen = Some(Instant::now());
-                    }
+                } else if new_member.incarnation == existing.incarnation
+                    && new_member.state == NodeState::Alive
+                    && existing.state == NodeState::Suspect
+                {
+                    tracing::info!("{:?} refuted suspiction", new_member.id);
+                    existing.state = NodeState::Alive;
+                    existing.last_seen = Some(Instant::now());
                 }
             }
             None => {
@@ -378,7 +381,7 @@ impl MembershipService {
     }
 
     async fn failure_detection_loop(self: Arc<Self>) {
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        let mut interval = tokio::time::interval(FAILURE_DETECTION_INTERVAL);
 
         loop {
             interval.tick().await;
