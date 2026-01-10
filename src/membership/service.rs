@@ -329,10 +329,6 @@ impl MembershipService {
                             existing.state = NodeState::Alive;
                             existing.last_seen = Some(Instant::now());
 
-                            let msg = GossipMessage::Alive {
-                                node_id: node_id.clone(),
-                                incarnation: my_incarnation,
-                            };
                             Some(GossipMessage::Alive {
                                 node_id: node_id.clone(),
                                 incarnation: my_incarnation,
