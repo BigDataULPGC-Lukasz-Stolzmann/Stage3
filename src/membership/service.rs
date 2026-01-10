@@ -287,17 +287,6 @@ impl MembershipService {
                     existing.state = new_member.state;
                     existing.incarnation = new_member.incarnation;
                     existing.last_seen = Some(Instant::now());
-                } else if new_member.incarnation == existing.incarnation
-                    && new_member.state == NodeState::Alive
-                    && existing.state == NodeState::Suspect
-                {
-                    tracing::info!(
-                        "Node {:?} at {} refuted suspiction",
-                        new_member.id,
-                        new_member.addr
-                    );
-                    existing.state = NodeState::Alive;
-                    existing.last_seen = Some(Instant::now());
                 }
             }
             None => {
