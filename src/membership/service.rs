@@ -207,6 +207,18 @@ impl MembershipService {
             if from_incarnation > member.incarnation {
                 member.incarnation = from_incarnation;
             }
+        } else {
+            tracing::info!("Discovered new member via piang: {:?} at {}", from, src);
+
+            let new_node = Node {
+                id: from.clone(),
+                addr: src,
+                state: NodeState::Alive,
+                incarnation: from_incarnation,
+                last_seen: Some(Instant::now()),
+            };
+
+            self.members.insert(new_node.id.clone(), new_node);
         }
 
         let all_members: Vec<Node> = self
