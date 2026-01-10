@@ -309,40 +309,56 @@ impl MembershipService {
     }
 
     async fn handle_suspect(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
-        match self.members.get_mut(&node_id) {
-            Some(mut existing) => {
-                if incarnation > existing.incarnation {
-                    if node_id == self.local_node.id {
-                        tracing::info!("Node {:?} at {} alive", existing.id, existing.addr);
-                        let my_incarnation = {
-                            let mut inc = self.incarnation.write().await;
-                            *inc += 1;
-                            *inc
-                        };
+        let msg_to_broadcast = {
+            match self.members.get_mut(&node_id) {
+                Some(mut existing) => {
+                    if incarnation > existing.incarnation {
+                        if node_id == self.local_node.id {
+                            tracing::info!(
+                                "Self-defense: Node{:?} at {} - refuting suspiction",
+                                node_id,
+                                self.local_node.addr
+                            );
+                            let my_incarnation = {
+                                let mut inc = self.incarnation.write().await;
+                                *inc += 1;
+                                *inc
+                            };
 
-                        let msg = GossipMessage::Alive {
-                            node_id: node_id.clone(),
-                            incarnation: my_incarnation,
-                        };
+                            existing.incarnation = my_incarnation;
+                            existing.state = NodeState::Alive;
+                            existing.last_seen = Some(Instant::now());
 
-                        self.broadcast_message(msg).await;
+                            let msg = GossipMessage::Alive {
+                                node_id: node_id.clone(),
+                                incarnation: my_incarnation,
+                            };
+                            Some(GossipMessage::Alive {
+                                node_id: node_id.clone(),
+                                incarnation: my_incarnation,
+                            })
+                        } else {
+                            tracing::info!("Node {:?} at {} suspected", existing.id, existing.addr);
+                            existing.state = NodeState::Suspect;
+                            existing.incarnation = incarnation;
+                            existing.last_seen = Some(Instant::now());
 
-                        existing.incarnation = my_incarnation;
-                        existing.state = NodeState::Alive;
-                        existing.last_seen = Some(Instant::now());
+                            None
+                        }
                     } else {
-                        tracing::info!("Node {:?} at {} suspected", existing.id, existing.addr);
-                        existing.state = NodeState::Suspect;
-                        existing.incarnation = incarnation;
-                        existing.last_seen = Some(Instant::now());
+                        None
                     }
                 }
+                None => {
+                    tracing::debug!("Suspected node {:?} doesn't exist", node_id);
+                    None
+                }
             }
-            None => {
-                tracing::debug!("Suspected node {:?} doesn't exist", node_id);
-            }
-        }
+        };
 
+        if let Some(msg) = msg_to_broadcast {
+            self.broadcast_message(msg).await;
+        }
         Ok(())
     }
 
@@ -448,13 +464,7 @@ impl MembershipService {
                             }
                         }
 
-                        NodeState::Dead => {
-                            tracing::debug!(
-                                "Node {:?} DEAD (no concact for {:?})",
-                                member.id,
-                                elapsed
-                            );
-                        }
+                        NodeState::Dead => {}
                     }
                 } else {
                     member.last_seen = Some(now);
