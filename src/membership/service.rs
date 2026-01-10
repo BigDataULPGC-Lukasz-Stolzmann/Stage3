@@ -425,8 +425,8 @@ impl MembershipService {
                                     incarnation: member.incarnation,
                                 };
 
-                                drop(entry);
                                 self.broadcast_message(msg).await;
+                                drop(entry);
                             }
                         }
 
