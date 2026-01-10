@@ -226,7 +226,6 @@ impl MembershipService {
             .iter()
             .map(|entry| entry.value().clone())
             .collect();
-
         let my_incarnation = *self.incarnation.read().await;
         let reply = GossipMessage::Ack {
             from: self.local_node.id.clone(),
@@ -254,16 +253,14 @@ impl MembershipService {
             from_incarnation,
             members.len()
         );
+        tracing::debug!("MEMBERS: {:?}", members);
 
         if let Some(mut member) = self.members.get_mut(&from) {
             if from_incarnation > member.incarnation {
-                // a moze tu tez stan noda sie modyfikuje?
                 member.incarnation = from_incarnation;
                 member.last_seen = Some(Instant::now());
             }
         }
-
-        // czy tu tez sie dodaje node jak nie bylo? czy w ack jest discovery node?
 
         for member in members {
             self.merge_member(member).await;
@@ -304,6 +301,9 @@ impl MembershipService {
                 }
             }
             None => {
+                if new_member.state == NodeState::Dead {
+                    return;
+                }
                 tracing::info!(
                     "Doscovered new member: {:?} at {}",
                     new_member.id,
@@ -324,7 +324,9 @@ impl MembershipService {
             match self.members.get_mut(&node_id) {
                 Some(mut existing) => {
                     if incarnation > existing.incarnation {
-                        if existing.id == self.local_node.id {
+                        if existing.id == self.local_node.id
+                            || self.local_node.state != NodeState::Dead
+                        {
                             tracing::info!(
                                 "Self-defense: Node {:?} at {} - refuting suspiction",
                                 node_id,
@@ -372,6 +374,10 @@ impl MembershipService {
     async fn handle_alive(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
         match self.members.get_mut(&node_id) {
             Some(mut existing) => {
+                if existing.state == NodeState::Dead {
+                    tracing::debug!("Ignoring Alive message for dead node {:?}", node_id);
+                    return Ok(());
+                }
                 if incarnation > existing.incarnation {
                     tracing::info!(
                         "Node {:?} at {} is now Alive (inc={})",
