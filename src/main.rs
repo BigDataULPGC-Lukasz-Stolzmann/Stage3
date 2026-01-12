@@ -1,7 +1,14 @@
+use axum::Json;
+use axum::http::StatusCode;
+use axum::{Router, extract::Extension, routing::post};
 use distributed_cluster::membership::service::MembershipService;
+use distributed_cluster::storage::handlers::handle_replicate;
+use distributed_cluster::storage::memory::DistributedMap;
+use distributed_cluster::storage::partitioner::PartitionManager;
+use distributed_cluster::storage::protocol::*;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-
-use tracing_subscriber;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -51,17 +58,31 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Starting as seed node (founder)");
     }
 
-    let service = MembershipService::new(bind_addr, seed_nodes).await?;
+    // 1. Membership (UDP gossip):
+    let membership = MembershipService::new(bind_addr, seed_nodes).await?;
+    tracing::info!("Node ID: {:?}", membership.local_node.id);
 
-    tracing::info!("Node ID: {:?}", service.local_node.id);
-    tracing::info!("Initial cluster size: {}", service.members.len());
+    // 2. Storage layer:
+    let partitioner = PartitionManager::new(membership.clone());
 
-    let service_clone = service.clone();
+    let books = Arc::new(DistributedMap::<String, BookMetadata>::new(
+        membership.clone(),
+        partitioner.clone(),
+    ));
+
+    // 3. HTTP Router:
+    let app = Router::new()
+        .route("/replicate", post(handle_replicate_book))
+        .layer(Extension(books));
+
+    // 4. Spawn membership service:
+    let service_clone = membership.clone();
     tokio::spawn(async move {
         service_clone.start().await;
     });
 
-    let stats_service = service.clone();
+    // 5. Spawn stats reporter:
+    let stats_service = membership.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
@@ -80,9 +101,28 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    tracing::info!("Press Ctrl+C to shutdown");
-    tokio::signal::ctrl_c().await?;
+    // 6. Start HTTP server:
+    let http_port = bind_addr.port() + 1000;
+    let http_addr = SocketAddr::new(bind_addr.ip(), http_port);
 
-    tracing::info!("Shutting down...");
+    tracing::info!("HTTP server listening on {}", http_addr);
+    tracing::info!("Press Ctrl+C to shutdown");
+
+    let listener = tokio::net::TcpListener::bind(http_addr).await?;
+    axum::serve(listener, app).await?;
+
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BookMetadata {
+    name: String,
+    author: String,
+}
+
+async fn handle_replicate_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    json: Json<ReplicateRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_replicate::<String, BookMetadata>(map, json).await
 }

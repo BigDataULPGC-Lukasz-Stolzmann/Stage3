@@ -10,12 +10,12 @@ pub struct PartitionManager {
 }
 
 impl PartitionManager {
-    pub fn new(membership: Arc<MembershipService>) -> Self {
-        Self {
+    pub fn new(membership: Arc<MembershipService>) -> Arc<Self> {
+        Arc::new(Self {
             num_partitions: 256,
             replication_factor: 1,
             membership,
-        }
+        })
     }
 
     pub fn get_partition(&self, key: &str) -> u32 {

@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::hash::Hash;
+use std::str::FromStr;
 use std::sync::Arc;
 
 pub struct DistributedMap<K, V> {
@@ -21,7 +22,8 @@ pub struct DistributedMap<K, V> {
 
 impl<K, V> DistributedMap<K, V>
 where
-    K: ToString + Clone + Hash + Eq + Send + Sync,
+    K: ToString + FromStr + Clone + Hash + Eq + Send + Sync,
+    <K as FromStr>::Err: std::fmt::Display,
     V: Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     pub fn new(membership: Arc<MembershipService>, partitioner: Arc<PartitionManager>) -> Self {
@@ -109,6 +111,18 @@ where
         partition_map.insert(key, value);
     }
 
+    pub fn get_local(&self, key: &K) -> Option<V> {
+        let partition = self.partitioner.get_partition(&key.to_string());
+
+        if let Some(partition_map) = self.local_data.get(&partition)
+            && let Some(value) = partition_map.get(key)
+        {
+            return Some(value.clone());
+        }
+
+        None
+    }
+
     pub async fn get(&self, key: &K) -> Option<V> {
         let partition = self.partitioner.get_partition(&key.to_string());
 
@@ -179,6 +193,22 @@ where
             }
             None => Ok(None),
         }
+    }
+
+    pub async fn put_local(&self, key: K, value: V) -> Result<()> {
+        let partition = self.partitioner.get_partition(&key.to_string());
+
+        self.store_local(partition, key.clone(), value.clone());
+
+        tracing::info!("Stored locally as primary for partition {}", partition);
+
+        let owners = self.partitioner.get_owners(partition);
+        if owners.len() > 1 {
+            self.replicate_to_backup(&owners[1], partition, key, value)
+                .await?;
+        }
+
+        Ok(())
     }
 
     pub async fn put(&self, key: K, value: V) -> Result<()> {

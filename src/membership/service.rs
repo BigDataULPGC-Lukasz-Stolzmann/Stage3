@@ -84,6 +84,10 @@ impl MembershipService {
         tracing::info!("All background tasks started");
     }
 
+    pub fn get_member(&self, node_id: &NodeId) -> Option<Node> {
+        self.members.get(node_id).map(|entry| entry.clone())
+    }
+
     pub fn get_alive_members(&self) -> Vec<Node> {
         self.members
             .iter()
