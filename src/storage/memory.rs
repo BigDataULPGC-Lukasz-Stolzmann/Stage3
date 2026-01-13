@@ -67,6 +67,18 @@ where
         Ok(())
     }
 
+    pub async fn store_as_primary(&self, partition: u32, key: K, value: V) -> Result<()> {
+        self.store_local(partition, key.clone(), value.clone());
+
+        let owners = self.partitioner.get_owners(partition);
+        if owners.len() > 1 {
+            self.replicate_to_backup(&owners[1], partition, key, value)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn replicate_to_backup(
         &self,
         backup_node_id: &NodeId,
@@ -175,7 +187,12 @@ where
 
         let addr = node.http_addr;
 
-        let url = format!("http://{}{}/{}", addr, ENDPOINT_GET, key.to_string());
+        let url = format!(
+            "http://{}{}/{}",
+            addr,
+            ENDPOINT_GET_INTERNAL,
+            key.to_string()
+        );
 
         let response = self
             .http_client

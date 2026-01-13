@@ -80,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/put", post(handle_put_book))
         .route("/get/:key", get(handle_get_book))
+        .route("/internal/get/:key", get(handle_get_internal_book))
         .route("/forward_put", post(handle_forward_put_book))
         .route("/replicate", post(handle_replicate_book))
         .layer(Extension(books));
@@ -128,6 +129,13 @@ async fn main() -> anyhow::Result<()> {
 struct BookMetadata {
     name: String,
     author: String,
+}
+
+async fn handle_get_internal_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get_internal::<String, BookMetadata>(map, json).await
 }
 
 async fn handle_get_book(
