@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub struct PartitionManager {
-    num_partitions: u32,
+    pub num_partitions: u32,
     replication_factor: usize,
     membership: Arc<MembershipService>,
 }

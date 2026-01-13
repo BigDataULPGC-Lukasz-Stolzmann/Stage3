@@ -6,6 +6,12 @@ use axum::{
     extract::Extension,
     routing::{get, post},
 };
+use distributed_cluster::executor::executor::TaskExecutor;
+use distributed_cluster::executor::handlers::{
+    handle_get_task_status, handle_internal_submit_task, handle_submit_task,
+};
+use distributed_cluster::executor::queue::DistributedQueue;
+use distributed_cluster::executor::registry::TaskHandlerRegistry;
 use distributed_cluster::membership::service::MembershipService;
 use distributed_cluster::storage::handlers::*;
 use distributed_cluster::storage::memory::DistributedMap;
@@ -14,6 +20,7 @@ use distributed_cluster::storage::protocol::*;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -76,6 +83,22 @@ async fn main() -> anyhow::Result<()> {
         partitioner.clone(),
     ));
 
+    let queue = Arc::new(DistributedQueue::new(
+        membership.clone(),
+        partitioner.clone(),
+    ));
+    let reqistry = TaskHandlerRegistry::new();
+
+    reqistry.register("test_handler", |_task| async move {
+        tracing::info!("Executing test task!");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        Ok(())
+    });
+
+    let executor = TaskExecutor::new(queue.clone(), reqistry, 4);
+
+    executor.start().await;
+
     // 3. HTTP Router:
     let app = Router::new()
         .route("/put", post(handle_put_book))
@@ -83,7 +106,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/internal/get/:key", get(handle_get_internal_book))
         .route("/forward_put", post(handle_forward_put_book))
         .route("/replicate", post(handle_replicate_book))
-        .layer(Extension(books));
+        .route("/task/submit", post(handle_submit_task))
+        .route("/task/status/:id", get(handle_get_task_status))
+        .route("/internal/submit_task", post(handle_internal_submit_task))
+        .layer(Extension(books))
+        .layer(Extension(queue));
 
     // 4. Spawn membership service:
     let service_clone = membership.clone();
