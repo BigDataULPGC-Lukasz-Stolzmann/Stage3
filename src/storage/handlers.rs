@@ -125,16 +125,18 @@ where
         }
     };
 
-    match map.put_local(key, value).await {
-        Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
-        Err(e) => {
-            tracing::error!("Failed to put local: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PutResponse { success: false }),
-            )
-        }
-    }
+    map.store_local(req.partition, key, value);
+    (StatusCode::OK, Json(PutResponse { success: true }))
+    // match map.put_local(key, value).await {
+    //     Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
+    //     Err(e) => {
+    //         tracing::error!("Failed to put local: {}", e);
+    //         (
+    //             StatusCode::INTERNAL_SERVER_ERROR,
+    //             Json(PutResponse { success: false }),
+    //         )
+    //     }
+    // }
 }
 
 // Generic handlers - używane przez concrete wrappers w main.rs

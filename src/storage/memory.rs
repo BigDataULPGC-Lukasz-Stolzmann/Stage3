@@ -1,9 +1,6 @@
 use super::partitioner::PartitionManager;
 use super::protocol::*;
-use crate::membership::{
-    service::MembershipService,
-    types::{Node, NodeId},
-};
+use crate::membership::{service::MembershipService, types::NodeId};
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -141,6 +138,13 @@ where
         }
 
         let primary_owner = &owners[0];
+
+        if primary_owner == &self.membership.local_node.id {
+            if owners.len() > 1 {
+                return self.fetch_remote(&owners[1], key).await.ok().flatten();
+            }
+            return None;
+        }
 
         match self.fetch_remote(primary_owner, key).await {
             Ok(Some(value)) => {
