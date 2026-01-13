@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const ENDPOINT_REPLICATE: &str = "/replicate";
 pub const ENDPOINT_FORWARD_PUT: &str = "/forward_put";
+pub const ENSPOINT_PUT: &str = "/put";
 pub const ENDPOINT_GET: &str = "/get";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -14,6 +15,12 @@ pub struct ReplicateRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ForwardPutRequest {
     pub partition: u32,
+    pub key: String,
+    pub value_json: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PutRequest {
     pub key: String,
     pub value_json: String,
 }

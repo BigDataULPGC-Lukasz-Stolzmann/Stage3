@@ -9,59 +9,132 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use super::memory::DistributedMap;
-use super::protocol::{ForwardPutRequest, GetResponse, PutResponse, ReplicateRequest};
+use super::protocol::{ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest};
 
-pub async fn handle_get<K, V>(
-    Path(key_str): Path<String>,
+pub async fn handle_put<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
-) -> Result<Json<GetResponse>, StatusCode>
+    Json(req): Json<PutRequest>,
+) -> (StatusCode, Json<PutResponse>)
 where
     K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
     <K as FromStr>::Err: std::fmt::Display,
     V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    let key: K = key_str.parse().map_err(|e| {
-        tracing::error!("Failed to parse key: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
+    let key: K = match req.key.parse() {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::error!("Failed to parse key: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutResponse { success: false }),
+            );
+        }
+    };
+
+    let value: V = match serde_json::from_str(&req.value_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Failed to deserialize value: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutResponse { success: false }),
+            );
+        }
+    };
+
+    match map.put(key, value).await {
+        Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
+        Err(e) => {
+            tracing::error!("Failed to put: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(PutResponse { success: false }),
+            )
+        }
+    }
+}
+pub async fn handle_get<K, V>(
+    Extension(map): Extension<Arc<DistributedMap<K, V>>>,
+    Path(key_str): Path<String>,
+) -> (StatusCode, Json<GetResponse>)
+where
+    K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
+    <K as FromStr>::Err: std::fmt::Display,
+    V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    let key: K = match key_str.parse() {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::error!("Failed to parse key: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(GetResponse { value_json: None }),
+            );
+        }
+    };
 
     if let Some(value) = map.get_local(&key) {
-        let value_json =
-            serde_json::to_string(&value).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        return Ok(Json(GetResponse {
-            value_json: Some(value_json),
-        }));
+        match serde_json::to_string(&value) {
+            Ok(value_json) => (
+                StatusCode::OK,
+                Json(GetResponse {
+                    value_json: Some(value_json),
+                }),
+            ),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GetResponse { value_json: None }),
+            ),
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(GetResponse { value_json: None }),
+        )
     }
-
-    Ok(Json(GetResponse { value_json: None }))
 }
 
 pub async fn handle_forward_put<K, V>(
-    Json(req): Json<ForwardPutRequest>,
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
-) -> Result<Json<PutResponse>, StatusCode>
+    Json(req): Json<ForwardPutRequest>,
+) -> (StatusCode, Json<PutResponse>)
 where
     K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
     <K as FromStr>::Err: std::fmt::Display,
     V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    let key: K = req.key.parse().map_err(|e| {
-        tracing::error!("Failed to parse key: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
+    let key: K = match req.key.parse() {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::error!("Failed to parse key: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutResponse { success: false }),
+            );
+        }
+    };
 
-    let value: V = serde_json::from_str(&req.value_json).map_err(|e| {
-        tracing::error!("Failed to deserialize value: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
+    let value: V = match serde_json::from_str(&req.value_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Failed to deserialize value: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutResponse { success: false }),
+            );
+        }
+    };
 
-    map.put_local(key, value).await.map_err(|e| {
-        tracing::error!("Failed to put local: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(Json(PutResponse { success: true }))
+    match map.put_local(key, value).await {
+        Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
+        Err(e) => {
+            tracing::error!("Failed to put local: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(PutResponse { success: false }),
+            )
+        }
+    }
 }
 
 // Generic handlers - używane przez concrete wrappers w main.rs

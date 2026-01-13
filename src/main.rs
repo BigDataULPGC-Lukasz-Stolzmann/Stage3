@@ -1,8 +1,13 @@
 use axum::Json;
+use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::{Router, extract::Extension, routing::post};
+use axum::{
+    Router,
+    extract::Extension,
+    routing::{get, post},
+};
 use distributed_cluster::membership::service::MembershipService;
-use distributed_cluster::storage::handlers::handle_replicate;
+use distributed_cluster::storage::handlers::*;
 use distributed_cluster::storage::memory::DistributedMap;
 use distributed_cluster::storage::partitioner::PartitionManager;
 use distributed_cluster::storage::protocol::*;
@@ -72,6 +77,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. HTTP Router:
     let app = Router::new()
+        .route("/put", post(handle_put_book))
+        .route("/get/:key", get(handle_get_book))
+        .route("/forward_put", post(handle_forward_put_book))
         .route("/replicate", post(handle_replicate_book))
         .layer(Extension(books));
 
@@ -118,6 +126,27 @@ async fn main() -> anyhow::Result<()> {
 struct BookMetadata {
     name: String,
     author: String,
+}
+
+async fn handle_get_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get::<String, BookMetadata>(map, json).await
+}
+
+async fn handle_forward_put_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    json: Json<ForwardPutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_forward_put::<String, BookMetadata>(map, json).await
+}
+
+async fn handle_put_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    json: Json<PutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_put::<String, BookMetadata>(map, json).await
 }
 
 async fn handle_replicate_book(
