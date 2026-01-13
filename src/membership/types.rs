@@ -21,7 +21,8 @@ pub enum NodeState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
-    pub addr: SocketAddr,
+    pub gossip_addr: SocketAddr,
+    pub http_addr: SocketAddr,
     pub state: NodeState,
     pub incarnation: u64,
 

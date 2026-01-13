@@ -53,6 +53,7 @@ where
         }
     }
 }
+
 pub async fn handle_get<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Path(key_str): Path<String>,
@@ -73,8 +74,8 @@ where
         }
     };
 
-    if let Some(value) = map.get_local(&key) {
-        match serde_json::to_string(&value) {
+    match map.get(&key).await {
+        Some(value) => match serde_json::to_string(&value) {
             Ok(value_json) => (
                 StatusCode::OK,
                 Json(GetResponse {
@@ -85,12 +86,11 @@ where
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(GetResponse { value_json: None }),
             ),
-        }
-    } else {
-        (
+        },
+        None => (
             StatusCode::NOT_FOUND,
             Json(GetResponse { value_json: None }),
-        )
+        ),
     }
 }
 

@@ -47,7 +47,7 @@ where
             .membership
             .get_member(primary_node_id)
             .ok_or_else(|| anyhow::anyhow!("Primary node not found"))?;
-        let addr = node.addr;
+        let addr = node.http_addr;
 
         let value_json = serde_json::to_string(&value)?;
         let payload = ForwardPutRequest {
@@ -81,7 +81,7 @@ where
             .membership
             .get_member(backup_node_id)
             .ok_or_else(|| anyhow::anyhow!("Backup node not found"))?;
-        let addr = node.addr;
+        let addr = node.http_addr;
 
         let value_json = serde_json::to_string(&value)?;
         let payload = ReplicateRequest {
@@ -169,9 +169,9 @@ where
             .get_member(owner_id)
             .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", owner_id))?;
 
-        let addr = node.addr;
+        let addr = node.http_addr;
 
-        let url = format!("http://{}{}{}", addr, ENDPOINT_GET, key.to_string());
+        let url = format!("http://{}{}/{}", addr, ENDPOINT_GET, key.to_string());
 
         let response = self
             .http_client
@@ -228,6 +228,14 @@ where
             if owners.len() > 1 {
                 self.replicate_to_backup(&owners[1], partition, key, value)
                     .await?;
+                // let backup = owners[1].clone();
+                // let self_clone = self.clone();
+                //
+                // tokio::spawn(async move {
+                //     let _ = self_clone
+                //         .replicate_to_backup(&backup, partition, key, value)
+                //         .await;
+                // });
             }
         }
 

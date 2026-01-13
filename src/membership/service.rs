@@ -28,7 +28,8 @@ impl MembershipService {
         let current_inc = *incarnation_counter.read().await;
         let local_node = Node {
             id: NodeId::new(),
-            addr: bind_addr,
+            gossip_addr: bind_addr,
+            http_addr: SocketAddr::new(bind_addr.ip(), bind_addr.port() + 1000),
             state: NodeState::Alive,
             incarnation: current_inc,
             last_seen: Some(Instant::now()),
@@ -127,7 +128,7 @@ impl MembershipService {
             };
 
             if let Ok(encoded) = bincode::serialize(&msg) {
-                if let Err(e) = self.socket.send_to(&encoded, target.addr).await {
+                if let Err(e) = self.socket.send_to(&encoded, target.gossip_addr).await {
                     tracing::warn!("Failed to send ping to {:?}: {}", target.id, e);
                 } else {
                     tracing::debug!("Sent ping to {:?}", target.id);
@@ -216,7 +217,8 @@ impl MembershipService {
 
             let new_node = Node {
                 id: from.clone(),
-                addr: src,
+                gossip_addr: src,
+                http_addr: SocketAddr::new(src.ip(), src.port() + 1000),
                 state: NodeState::Alive,
                 incarnation: from_incarnation,
                 last_seen: Some(Instant::now()),
@@ -300,7 +302,7 @@ impl MembershipService {
                 tracing::info!(
                     "Doscovered new member: {:?} at {}",
                     new_member.id,
-                    new_member.addr
+                    new_member.gossip_addr
                 );
 
                 let mut member_with_timestamp = new_member;
@@ -323,7 +325,7 @@ impl MembershipService {
                             tracing::info!(
                                 "Self-defense: Node {:?} at {} - refuting suspiction",
                                 node_id,
-                                self.local_node.addr
+                                self.local_node.gossip_addr
                             );
                             let my_incarnation = {
                                 let mut inc = self.incarnation.write().await;
@@ -340,7 +342,7 @@ impl MembershipService {
                                 incarnation: my_incarnation,
                             })
                         } else {
-                            tracing::info!("Node {:?} at {} suspected", existing.id, existing.addr);
+                            tracing::info!("Node {:?} at {} suspected", existing.id, existing.gossip_addr);
                             existing.state = NodeState::Suspect;
                             existing.incarnation = incarnation;
                             existing.last_seen = Some(Instant::now());
@@ -375,7 +377,7 @@ impl MembershipService {
                     tracing::info!(
                         "Node {:?} at {} is now Alive (inc={})",
                         existing.id,
-                        existing.addr,
+                        existing.gossip_addr,
                         incarnation
                     );
                     existing.state = NodeState::Alive;
@@ -387,7 +389,7 @@ impl MembershipService {
                     tracing::info!(
                         "Node {:?} at {} successfully refuted suspiction",
                         existing.id,
-                        existing.addr,
+                        existing.gossip_addr,
                     );
                     existing.state = NodeState::Alive;
                     existing.incarnation = incarnation;
@@ -403,7 +405,7 @@ impl MembershipService {
     }
 
     async fn handle_join(&self, mut node: Node) -> Result<()> {
-        tracing::info!("Node {:?} joining cluster at {}", node.id, node.addr);
+        tracing::info!("Node {:?} joining cluster at {}", node.id, node.gossip_addr);
 
         node.last_seen = Some(Instant::now());
 
@@ -492,7 +494,7 @@ impl MembershipService {
                 }
 
                 if member.state == NodeState::Alive
-                    && let Err(e) = self.socket.send_to(&encoded, member.addr).await
+                    && let Err(e) = self.socket.send_to(&encoded, member.gossip_addr).await
                 {
                     tracing::warn!("Failed to broadcast to {:?}: {}", member.id, e);
                 }

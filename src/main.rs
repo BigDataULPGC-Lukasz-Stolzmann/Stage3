@@ -100,9 +100,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("Cluster stats: {} alive nodes", alive.len());
             for node in alive {
                 tracing::info!(
-                    "  - {:?} at {} (inc={})",
+                    "  - {:?} gossip={} http={} (inc={})",
                     node.id,
-                    node.addr,
+                    node.gossip_addr,
+                    node.http_addr,
                     node.incarnation
                 );
             }
