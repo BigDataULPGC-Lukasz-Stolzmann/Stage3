@@ -41,17 +41,18 @@ where
             );
         }
     };
-
-    match map.put(key, value).await {
-        Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
-        Err(e) => {
-            tracing::error!("Failed to put: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PutResponse { success: false }),
-            )
-        }
-    }
+    tracing::info!("PUT SUCCESS: {:?}", key.to_string());
+    (StatusCode::OK, Json(PutResponse { success: true }))
+    // match map.put(key, value).await {
+    //     Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
+    //     Err(e) => {
+    //         tracing::error!("Failed to put: {}", e);
+    //         (
+    //             StatusCode::INTERNAL_SERVER_ERROR,
+    //             Json(PutResponse { success: false }),
+    //         )
+    //     }
+    // }
 }
 
 pub async fn handle_get<K, V>(
@@ -74,24 +75,26 @@ where
         }
     };
 
-    match map.get(&key).await {
-        Some(value) => match serde_json::to_string(&value) {
-            Ok(value_json) => (
-                StatusCode::OK,
-                Json(GetResponse {
-                    value_json: Some(value_json),
-                }),
-            ),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(GetResponse { value_json: None }),
-            ),
-        },
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(GetResponse { value_json: None }),
-        ),
-    }
+    tracing::info!("SUCCES GET KEY: {}", key.to_string());
+    (StatusCode::OK, Json(GetResponse { value_json: None }))
+    // match map.get(&key).await {
+    //     Some(value) => match serde_json::to_string(&value) {
+    //         Ok(value_json) => (
+    //             StatusCode::OK,
+    //             Json(GetResponse {
+    //                 value_json: Some(value_json),
+    //             }),
+    //         ),
+    //         Err(_) => (
+    //             StatusCode::INTERNAL_SERVER_ERROR,
+    //             Json(GetResponse { value_json: None }),
+    //         ),
+    //     },
+    //     None => (
+    //         StatusCode::NOT_FOUND,
+    //         Json(GetResponse { value_json: None }),
+    //     ),
+    // }
 }
 
 pub async fn handle_forward_put<K, V>(

@@ -262,9 +262,14 @@ impl MembershipService {
         tracing::debug!("MEMBERS: {:?}", members);
 
         if let Some(mut member) = self.members.get_mut(&from) {
+            if member.state == NodeState::Dead {
+                return Ok(());
+            }
+
+            member.last_seen = Some(Instant::now());
+
             if from_incarnation > member.incarnation {
                 member.incarnation = from_incarnation;
-                member.last_seen = Some(Instant::now());
             }
         }
 
@@ -318,10 +323,12 @@ impl MembershipService {
         let msg_to_broadcast = {
             match self.members.get_mut(&node_id) {
                 Some(mut existing) => {
+                    if existing.state == NodeState::Dead {
+                        tracing::debug!("Ignoring Alive message for dead node {:?}", node_id);
+                        return Ok(());
+                    }
                     if incarnation > existing.incarnation {
-                        if existing.id == self.local_node.id
-                            || self.local_node.state != NodeState::Dead
-                        {
+                        if existing.id == self.local_node.id {
                             tracing::info!(
                                 "Self-defense: Node {:?} at {} - refuting suspiction",
                                 node_id,
@@ -342,7 +349,11 @@ impl MembershipService {
                                 incarnation: my_incarnation,
                             })
                         } else {
-                            tracing::info!("Node {:?} at {} suspected", existing.id, existing.gossip_addr);
+                            tracing::info!(
+                                "Node {:?} at {} suspected",
+                                existing.id,
+                                existing.gossip_addr
+                            );
                             existing.state = NodeState::Suspect;
                             existing.incarnation = incarnation;
                             existing.last_seen = Some(Instant::now());
