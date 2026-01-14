@@ -1,4 +1,7 @@
-use super::protocol::*;
+use super::protocol::{
+    ENDPOINT_TASK_INTERNAL_GET, ENDPOINT_TASK_REPLICATE, ForwardTaskRequest, GetTaskResponse,
+    ReplicateTaskRequest,
+};
 use super::types::*;
 use crate::membership::{service::MembershipService, types::NodeId};
 use crate::storage::partitioner::PartitionManager;
@@ -8,9 +11,9 @@ use dashmap::DashMap;
 use std::sync::Arc;
 
 pub struct DistributedQueue {
-    local_tasks: Arc<DashMap<u32, DashMap<TaskId, TaskEntry>>>,
-    membership: Arc<MembershipService>,
-    partitioner: Arc<PartitionManager>,
+    pub local_tasks: Arc<DashMap<u32, DashMap<TaskId, TaskEntry>>>,
+    pub membership: Arc<MembershipService>,
+    pub partitioner: Arc<PartitionManager>,
     http_client: reqwest::Client,
 }
 
@@ -53,7 +56,7 @@ impl DistributedQueue {
                 task_id.0,
                 partition
             );
-            self.store_local(
+            self.store_as_primary(
                 partition,
                 task_id.clone(),
                 TaskEntry {
@@ -63,7 +66,8 @@ impl DistributedQueue {
                     created_at: now_ms(),
                     lease_expires: None,
                 },
-            );
+            )
+            .await?;
         } else {
             tracing::debug!("Forwarding task {} to primary {:?}", task_id.0, primary);
             self.forward_task(primary, partition, task_id.clone(), task)
@@ -82,6 +86,68 @@ impl DistributedQueue {
         partition_map.insert(task_id, entry);
 
         tracing::info!("Stored task in partition {}", partition);
+    }
+
+    pub async fn store_as_primary(
+        &self,
+        partition: u32,
+        task_id: TaskId,
+        entry: TaskEntry,
+    ) -> Result<()> {
+        self.store_local(partition, task_id.clone(), entry.clone());
+
+        let owners = self.partitioner.get_owners(partition);
+        if owners.len() > 1 {
+            self.replicate_task_to_backup(&owners[1], partition, task_id, entry)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn replicate_task_to_backup(
+        &self,
+        backup_node_id: &NodeId,
+        partition: u32,
+        task_id: TaskId,
+        entry: TaskEntry,
+    ) -> Result<()> {
+        let node = self
+            .membership
+            .get_member(backup_node_id)
+            .ok_or_else(|| anyhow::anyhow!("Backup node not found"))?;
+
+        let payload = ReplicateTaskRequest {
+            partition,
+            task_id: task_id.clone(),
+            entry,
+        };
+
+        let response = self
+            .http_client
+            .post(format!(
+                "http://{}{}",
+                node.http_addr, ENDPOINT_TASK_REPLICATE
+            ))
+            .json(&payload)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Task replication failed: {}",
+                response.status()
+            ));
+        }
+
+        tracing::debug!(
+            "Replicated task {} to backup {:?}",
+            task_id.0,
+            backup_node_id
+        );
+
+        Ok(())
     }
 
     async fn forward_task(
@@ -117,7 +183,6 @@ impl DistributedQueue {
         Ok(())
     }
 
-    /// Get all pending tasks for partitions owned by this node
     pub fn my_pending_tasks(&self) -> Vec<(TaskId, TaskEntry)> {
         let my_partitions = self.get_my_primary_partitions();
 
@@ -131,14 +196,13 @@ impl DistributedQueue {
                     let is_available = match task_entry.status {
                         TaskStatus::Pending => true,
                         TaskStatus::Running => {
-                            // Check if lease expired - can reclaim
                             if let Some(lease) = task_entry.lease_expires {
                                 now_ms() > lease
                             } else {
                                 false
                             }
                         }
-                        _ => false, // Completed/Failed - skip
+                        _ => false,
                     };
 
                     if is_available {
@@ -227,7 +291,66 @@ impl DistributedQueue {
         Err(anyhow::anyhow!("Task not found"))
     }
 
-    pub fn get_task(&self, task_id: &TaskId) -> Option<TaskEntry> {
+    pub async fn get_task(&self, task_id: &TaskId) -> Option<TaskEntry> {
+        match self.get_task_local(task_id) {
+            Some(task_entry) => {
+                tracing::debug!(
+                    "Task: {:?} found locally at: {:?}",
+                    task_id,
+                    self.membership.local_node.id
+                );
+                Some(task_entry)
+            }
+            None => {
+                let partition = self.partitioner.get_partition(&task_id.0);
+                let owners = self.partitioner.get_owners(partition);
+                if !owners.is_empty() && owners[0] != self.membership.local_node.id {
+                    match self.fetch_remote(&owners[0], &task_id.0).await {
+                        Ok(Some(task)) => return Some(task),
+                        Ok(None) => return None,
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch remote task: {}", e);
+                            return None;
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    async fn fetch_remote(&self, node_id: &NodeId, key: &str) -> Result<Option<TaskEntry>> {
+        let node = self
+            .membership
+            .get_member(node_id)
+            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
+
+        let addr = node.http_addr;
+
+        let url = format!(
+            "http://{}{}/{}",
+            addr,
+            ENDPOINT_TASK_INTERNAL_GET,
+            key.to_string()
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("GET request failed {}", response.status()));
+        }
+
+        let get_response: GetTaskResponse = response.json().await?;
+
+        Ok(get_response.task)
+    }
+
+    pub fn get_task_local(&self, task_id: &TaskId) -> Option<TaskEntry> {
         let partition = self.partitioner.get_partition(&task_id.0);
 
         if let Some(partition_map) = self.local_tasks.get(&partition) {

@@ -8,15 +8,26 @@ use axum::{
 };
 use distributed_cluster::executor::executor::TaskExecutor;
 use distributed_cluster::executor::handlers::{
-    handle_get_task_status, handle_internal_submit_task, handle_submit_task,
+    handle_get_task_internal, handle_get_task_status, handle_internal_submit_task,
+    handle_replicate_task, handle_submit_task,
+};
+use distributed_cluster::executor::protocol::{
+    ENDPOINT_INTERNAL_SUBMIT, ENDPOINT_SUBMIT_TASK, ENDPOINT_TASK_INTERNAL_GET,
+    ENDPOINT_TASK_REPLICATE, ENDPOINT_TASK_STATUS,
 };
 use distributed_cluster::executor::queue::DistributedQueue;
 use distributed_cluster::executor::registry::TaskHandlerRegistry;
+use distributed_cluster::executor::types::Task;
 use distributed_cluster::membership::service::MembershipService;
+use distributed_cluster::search::tokenizer::tokenize_text;
+use distributed_cluster::search::types::BookMetadata;
 use distributed_cluster::storage::handlers::*;
 use distributed_cluster::storage::memory::DistributedMap;
 use distributed_cluster::storage::partitioner::PartitionManager;
-use distributed_cluster::storage::protocol::*;
+use distributed_cluster::storage::protocol::{
+    ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PUT, ENDPOINT_REPLICATE,
+    ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest,
+};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -87,30 +98,66 @@ async fn main() -> anyhow::Result<()> {
         membership.clone(),
         partitioner.clone(),
     ));
-    let reqistry = TaskHandlerRegistry::new();
 
-    reqistry.register("test_handler", |_task| async move {
-        tracing::info!("Executing test task!");
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        Ok(())
+    let index_map = Arc::new(DistributedMap::<String, Vec<String>>::new(
+        membership.clone(),
+        partitioner.clone(),
+    ));
+    let task_registry = TaskHandlerRegistry::new();
+
+    let index_map_clone = index_map.clone();
+    task_registry.register("index_book", move |task| {
+        let index_map = index_map_clone.clone();
+        async move {
+            let Task::Execute { payload, .. } = task;
+            let metadata: BookMetadata = serde_json::from_value(payload)?;
+
+            let tokens = tokenize_text(&metadata.title);
+            for token in tokens {
+                let mut book_ids = index_map.get(&token).await.unwrap_or_default();
+
+                if !book_ids.contains(&metadata.book_id) {
+                    book_ids.push(metadata.book_id.clone());
+                }
+
+                index_map.put(token, book_ids).await?;
+            }
+
+            tracing::info!("Indexed book {}", metadata.book_id);
+            Ok(())
+        }
     });
 
-    let executor = TaskExecutor::new(queue.clone(), reqistry, 4);
+    let executor = TaskExecutor::new(queue.clone(), task_registry, 4);
 
     executor.start().await;
 
     // 3. HTTP Router:
     let app = Router::new()
-        .route("/put", post(handle_put_book))
-        .route("/get/:key", get(handle_get_book))
-        .route("/internal/get/:key", get(handle_get_internal_book))
-        .route("/forward_put", post(handle_forward_put_book))
-        .route("/replicate", post(handle_replicate_book))
-        .route("/task/submit", post(handle_submit_task))
-        .route("/task/status/:id", get(handle_get_task_status))
-        .route("/internal/submit_task", post(handle_internal_submit_task))
+        // Storage routes
+        .route(ENDPOINT_PUT, post(handle_put_book))
+        .route(&format!("{}/:key", ENDPOINT_GET), get(handle_get_book))
+        .route(
+            &format!("{}/:key", ENDPOINT_GET_INTERNAL),
+            get(handle_get_internal_book),
+        )
+        .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_book))
+        .route(ENDPOINT_REPLICATE, post(handle_replicate_book))
+        // Executor routes
+        .route(ENDPOINT_SUBMIT_TASK, post(handle_submit_task))
+        .route(
+            &format!("{}/:id", ENDPOINT_TASK_STATUS),
+            get(handle_get_task_status),
+        )
+        .route(
+            &format!("{}/:id", ENDPOINT_TASK_INTERNAL_GET),
+            get(handle_get_task_internal),
+        )
+        .route(ENDPOINT_INTERNAL_SUBMIT, post(handle_internal_submit_task))
+        .route(ENDPOINT_TASK_REPLICATE, post(handle_replicate_task))
         .layer(Extension(books))
-        .layer(Extension(queue));
+        .layer(Extension(queue))
+        .layer(Extension(index_map));
 
     // 4. Spawn membership service:
     let service_clone = membership.clone();
@@ -150,12 +197,6 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BookMetadata {
-    name: String,
-    author: String,
 }
 
 async fn handle_get_internal_book(
