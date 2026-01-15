@@ -14,6 +14,8 @@ use std::sync::Arc;
 #[derive(Deserialize)]
 pub struct SearchParams {
     pub q: String,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -87,10 +89,15 @@ pub async fn handle_search(
             score,
         })
         .collect();
+    let limit = params.limit.unwrap_or(10);
+    let offset = params.offset.unwrap_or(0);
+    let total_count = results.len();
+    let results: Vec<SearchResultItem> = results.into_iter().skip(offset).take(limit).collect();
 
     Json(SearchResponse {
         query: params.q,
         filters: HashMap::new(),
+        total_count,
         count: results.len(),
         results,
     })

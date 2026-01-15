@@ -14,6 +14,7 @@ pub struct BookResult {
 pub struct SearchResponse {
     pub query: String,
     pub filters: HashMap<String, String>,
+    pub total_count: usize,
     pub count: usize,
     pub results: Vec<SearchResultItem>,
 }
