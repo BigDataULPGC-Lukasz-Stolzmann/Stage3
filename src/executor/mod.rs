@@ -4,3 +4,6 @@ pub mod queue;
 pub mod handlers;
 pub mod executor;
 pub mod registry;
+
+#[cfg(test)]
+mod tests;
