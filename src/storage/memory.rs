@@ -236,6 +236,33 @@ where
         partition_map.insert(key, value);
     }
 
+    pub fn dump_partition(&self, partition: u32) -> Vec<(K, V)> {
+        let mut entries = Vec::new();
+        if let Some(partition_map) = self.local_data.get(&partition) {
+            for entry in partition_map.iter() {
+                entries.push((entry.key().clone(), entry.value().clone()));
+            }
+        }
+        entries
+    }
+
+    pub fn has_partition(&self, partition: u32) -> bool {
+        self.local_data
+            .get(&partition)
+            .map(|map| !map.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn apply_partition_entries(&self, partition: u32, entries: Vec<(K, V)>) {
+        for (key, value) in entries {
+            self.store_local(partition, key, value);
+        }
+    }
+
+    pub fn local_node_id(&self) -> NodeId {
+        self.membership.local_node.id.clone()
+    }
+
     pub fn store_replica(&self, partition: u32, op_id: String, key: K, value: V) -> Result<()> {
         if !self.should_process(&op_id) {
             return Ok(());
@@ -277,7 +304,11 @@ where
 
         if primary_owner == &self.membership.local_node.id {
             if owners.len() > 1 {
-                return self.fetch_remote(&owners[1], key).await.ok().flatten();
+                if let Ok(value) = self.fetch_remote(&owners[1], key).await {
+                    if value.is_some() {
+                        return value;
+                    }
+                }
             }
             return None;
         }
@@ -285,25 +316,25 @@ where
         match self.fetch_remote(primary_owner, key).await {
             Ok(Some(value)) => {
                 tracing::debug!("GET: Fetched from remote owner {:?}", primary_owner);
-                Some(value)
+                return Some(value);
             }
             Ok(None) => {
                 tracing::debug!("GET: Key not found on owner");
-                None
             }
             Err(e) => {
                 tracing::error!("GET: Failed to fetch from owner: {}", e);
-
-                for backup in owners.iter().skip(1) {
-                    if let Ok(value) = self.fetch_remote(backup, key).await {
-                        if value.is_some() {
-                            return value;
-                        }
-                    }
-                }
-                None
             }
         }
+
+        for backup in owners.iter().skip(1) {
+            if let Ok(value) = self.fetch_remote(backup, key).await {
+                if value.is_some() {
+                    return value;
+                }
+            }
+        }
+
+        None
     }
 
     pub async fn fetch_remote(&self, owner_id: &NodeId, key: &K) -> Result<Option<V>> {
@@ -326,6 +357,9 @@ where
             .get_with_retry(url, std::time::Duration::from_millis(500), 3)
             .await?;
 
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("GET request failed {}", response.status()));
         }
@@ -339,6 +373,48 @@ where
             }
             None => Ok(None),
         }
+    }
+
+    pub async fn fetch_partition(
+        &self,
+        owner_id: &NodeId,
+        partition: u32,
+    ) -> Result<Vec<(K, V)>> {
+        let node = self
+            .membership
+            .get_member(owner_id)
+            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", owner_id))?;
+
+        let url = format!(
+            "http://{}{}{}/{}",
+            node.http_addr,
+            self.base_path,
+            ENDPOINT_PARTITION_DUMP,
+            partition
+        );
+
+        let response = self
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
+            .await?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Partition dump failed {}", response.status()));
+        }
+
+        let dump: PartitionDumpResponse = response.json().await?;
+        let mut entries = Vec::new();
+        for item in dump.entries {
+            let key: K = item
+                .key
+                .parse()
+                .map_err(|e: <K as FromStr>::Err| anyhow::anyhow!(e.to_string()))?;
+            let value: V = serde_json::from_str(&item.value_json)?;
+            entries.push((key, value));
+        }
+        Ok(entries)
     }
 
     pub async fn put_local(&self, key: K, value: V) -> Result<()> {

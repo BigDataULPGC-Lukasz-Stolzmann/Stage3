@@ -5,6 +5,7 @@ pub const ENDPOINT_FORWARD_PUT: &str = "/forward_put";
 pub const ENDPOINT_PUT: &str = "/put";
 pub const ENDPOINT_GET: &str = "/get";
 pub const ENDPOINT_GET_INTERNAL: &str = "/internal/get";
+pub const ENDPOINT_PARTITION_DUMP: &str = "/internal/partition";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplicateRequest {
@@ -37,4 +38,16 @@ pub struct GetResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PutResponse {
     pub success: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KeyValueJson {
+    pub key: String,
+    pub value_json: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PartitionDumpResponse {
+    pub partition: u32,
+    pub entries: Vec<KeyValueJson>,
 }

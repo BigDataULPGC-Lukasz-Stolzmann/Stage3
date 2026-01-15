@@ -28,12 +28,15 @@ use distributed_cluster::storage::handlers::*;
 use distributed_cluster::storage::memory::DistributedMap;
 use distributed_cluster::storage::partitioner::PartitionManager;
 use distributed_cluster::storage::protocol::{
-    ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PUT, ENDPOINT_REPLICATE,
-    ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest,
+    ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PARTITION_DUMP,
+    ENDPOINT_PUT, ENDPOINT_REPLICATE, ForwardPutRequest, GetResponse, PutRequest, PutResponse,
+    ReplicateRequest,
 };
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::{collections::HashSet, hash::Hash, str::FromStr};
+use serde::de::DeserializeOwned;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -172,6 +175,10 @@ async fn main() -> anyhow::Result<()> {
                     &format!("{}/:key", ENDPOINT_GET_INTERNAL),
                     get(handle_get_internal_book),
                 )
+                .route(
+                    &format!("{}/:id", ENDPOINT_PARTITION_DUMP),
+                    get(handle_partition_dump_book),
+                )
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_book))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_book)),
         )
@@ -185,6 +192,10 @@ async fn main() -> anyhow::Result<()> {
                     &format!("{}/:key", ENDPOINT_GET_INTERNAL),
                     get(handle_get_internal_datalake),
                 )
+                .route(
+                    &format!("{}/:id", ENDPOINT_PARTITION_DUMP),
+                    get(handle_partition_dump_datalake),
+                )
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_datalake))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_datalake)),
         )
@@ -197,6 +208,10 @@ async fn main() -> anyhow::Result<()> {
                 .route(
                     &format!("{}/:key", ENDPOINT_GET_INTERNAL),
                     get(handle_get_internal_index),
+                )
+                .route(
+                    &format!("{}/:id", ENDPOINT_PARTITION_DUMP),
+                    get(handle_partition_dump_index),
                 )
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_index))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_index)),
@@ -213,15 +228,34 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(ENDPOINT_INTERNAL_SUBMIT, post(handle_internal_submit_task))
         .route(ENDPOINT_TASK_REPLICATE, post(handle_replicate_task))
-        .layer(Extension(books))
-        .layer(Extension(datalake))
+        .layer(Extension(books.clone()))
+        .layer(Extension(datalake.clone()))
         .layer(Extension(queue))
-        .layer(Extension(index_map));
+        .layer(Extension(index_map.clone()));
 
     // 4. Spawn membership service:
     let service_clone = membership.clone();
     tokio::spawn(async move {
         service_clone.start().await;
+    });
+
+    // 4b. Spawn resync workers for membership changes:
+    let books_sync = books.clone();
+    let datalake_sync = datalake.clone();
+    let index_sync = index_map.clone();
+    let partitioner_sync = partitioner.clone();
+    let books_partitioner = partitioner_sync.clone();
+    let datalake_partitioner = partitioner_sync.clone();
+    let index_partitioner = partitioner_sync.clone();
+
+    tokio::spawn(async move {
+        sync_loop("books", books_sync, books_partitioner).await;
+    });
+    tokio::spawn(async move {
+        sync_loop("datalake", datalake_sync, datalake_partitioner).await;
+    });
+    tokio::spawn(async move {
+        sync_loop("index", index_sync, index_partitioner).await;
     });
 
     // 5. Spawn stats reporter:
@@ -254,6 +288,92 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(http_addr).await?;
     axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+async fn sync_loop<K, V>(
+    name: &'static str,
+    map: Arc<DistributedMap<K, V>>,
+    partitioner: Arc<PartitionManager>,
+) where
+    K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
+    <K as FromStr>::Err: std::fmt::Display,
+    V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+
+    loop {
+        interval.tick().await;
+        if let Err(e) = sync_partitions(name, &map, &partitioner).await {
+            tracing::warn!("Resync loop for {} failed: {}", name, e);
+        }
+    }
+}
+
+async fn sync_partitions<K, V>(
+    name: &'static str,
+    map: &DistributedMap<K, V>,
+    partitioner: &PartitionManager,
+) -> anyhow::Result<()>
+where
+    K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
+    <K as FromStr>::Err: std::fmt::Display,
+    V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    let mut target_partitions = HashSet::new();
+    for partition in partitioner.my_primary_partitions() {
+        target_partitions.insert(partition);
+    }
+    for partition in partitioner.my_backup_partitions() {
+        target_partitions.insert(partition);
+    }
+
+    let local_id = map.local_node_id();
+
+    for partition in target_partitions {
+        if map.has_partition(partition) {
+            continue;
+        }
+
+        let owners = partitioner.get_owners(partition);
+        if owners.is_empty() {
+            continue;
+        }
+
+        let source_owner = if owners[0] == local_id {
+            owners.iter().skip(1).next()
+        } else {
+            Some(&owners[0])
+        };
+
+        let Some(source_owner) = source_owner else {
+            continue;
+        };
+
+        match map.fetch_partition(source_owner, partition).await {
+            Ok(entries) => {
+                if !entries.is_empty() {
+                    map.apply_partition_entries(partition, entries);
+                    tracing::info!(
+                        "Resynced {} partition {} from {:?}",
+                        name,
+                        partition,
+                        source_owner
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Resync {} partition {} failed from {:?}: {}",
+                    name,
+                    partition,
+                    source_owner,
+                    e
+                );
+            }
+        }
+    }
 
     Ok(())
 }
@@ -330,6 +450,13 @@ async fn handle_replicate_book(
     handle_replicate::<String, BookMetadata>(map, json).await
 }
 
+async fn handle_partition_dump_book(
+    map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    partition: Path<u32>,
+) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+    handle_partition_dump::<String, BookMetadata>(map, partition).await
+}
+
 async fn handle_get_internal_datalake(
     map: Extension<Arc<DistributedMap<String, RawDocument>>>,
     json: Path<String>,
@@ -365,6 +492,13 @@ async fn handle_replicate_datalake(
     handle_replicate::<String, RawDocument>(map, json).await
 }
 
+async fn handle_partition_dump_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    partition: Path<u32>,
+) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+    handle_partition_dump::<String, RawDocument>(map, partition).await
+}
+
 async fn handle_get_internal_index(
     map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
     json: Path<String>,
@@ -398,4 +532,11 @@ async fn handle_replicate_index(
     json: Json<ReplicateRequest>,
 ) -> (StatusCode, Json<PutResponse>) {
     handle_replicate::<String, Vec<String>>(map, json).await
+}
+
+async fn handle_partition_dump_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    partition: Path<u32>,
+) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+    handle_partition_dump::<String, Vec<String>>(map, partition).await
 }

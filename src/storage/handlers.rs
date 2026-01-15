@@ -9,7 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use super::memory::DistributedMap;
-use super::protocol::{ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest};
+use super::protocol::{
+    ForwardPutRequest, GetResponse, KeyValueJson, PartitionDumpResponse, PutRequest, PutResponse,
+    ReplicateRequest,
+};
 
 pub async fn handle_put<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
@@ -229,4 +232,34 @@ where
             )
         }
     }
+}
+
+pub async fn handle_partition_dump<K, V>(
+    Extension(map): Extension<Arc<DistributedMap<K, V>>>,
+    Path(partition): Path<u32>,
+) -> (StatusCode, Json<PartitionDumpResponse>)
+where
+    K: ToString + FromStr + Clone + Hash + Eq + Send + Sync + 'static,
+    <K as FromStr>::Err: std::fmt::Display,
+    V: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    let entries = map
+        .dump_partition(partition)
+        .into_iter()
+        .filter_map(|(key, value)| match serde_json::to_string(&value) {
+            Ok(value_json) => Some(KeyValueJson {
+                key: key.to_string(),
+                value_json,
+            }),
+            Err(e) => {
+                tracing::warn!("Failed to serialize partition entry: {}", e);
+                None
+            }
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(PartitionDumpResponse { partition, entries }),
+    )
 }
