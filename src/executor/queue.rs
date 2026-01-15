@@ -1,6 +1,6 @@
 use super::protocol::{
-    ENDPOINT_TASK_INTERNAL_GET, ENDPOINT_TASK_REPLICATE, ForwardTaskRequest, GetTaskResponse,
-    ReplicateTaskRequest,
+    ENDPOINT_TASK_INTERNAL_GET, ENDPOINT_TASK_PARTITION_DUMP, ENDPOINT_TASK_REPLICATE,
+    ForwardTaskRequest, GetTaskResponse, ReplicateTaskRequest, TaskPartitionDumpResponse,
 };
 use super::types::*;
 use crate::membership::{service::MembershipService, types::NodeId};
@@ -83,9 +83,75 @@ impl DistributedQueue {
             .entry(partition)
             .or_insert_with(|| DashMap::new());
 
-        partition_map.insert(task_id, entry);
+        if !partition_map.contains_key(&task_id) {
+            partition_map.insert(task_id, entry);
+        }
 
         tracing::info!("Stored task in partition {}", partition);
+    }
+
+    pub fn dump_partition(&self, partition: u32) -> Vec<(TaskId, TaskEntry)> {
+        let mut entries = Vec::new();
+        if let Some(partition_map) = self.local_tasks.get(&partition) {
+            for entry in partition_map.iter() {
+                entries.push((entry.key().clone(), entry.value().clone()));
+            }
+        }
+        entries
+    }
+
+    pub fn has_partition(&self, partition: u32) -> bool {
+        self.local_tasks
+            .get(&partition)
+            .map(|map| !map.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn apply_partition_entries(&self, partition: u32, entries: Vec<(TaskId, TaskEntry)>) {
+        let partition_map = self
+            .local_tasks
+            .entry(partition)
+            .or_insert_with(|| DashMap::new());
+        for (task_id, entry) in entries {
+            if !partition_map.contains_key(&task_id) {
+                partition_map.insert(task_id, entry);
+            }
+        }
+    }
+
+    pub fn local_node_id(&self) -> NodeId {
+        self.membership.local_node.id.clone()
+    }
+
+    pub fn local_partition_count(&self) -> usize {
+        self.local_tasks.len()
+    }
+
+    pub fn local_task_count(&self) -> usize {
+        self.local_tasks
+            .iter()
+            .map(|entry| entry.value().len())
+            .sum()
+    }
+
+    pub fn local_task_status_counts(&self) -> (usize, usize, usize, usize) {
+        let mut pending = 0;
+        let mut running = 0;
+        let mut completed = 0;
+        let mut failed = 0;
+
+        for partition in self.local_tasks.iter() {
+            for entry in partition.value().iter() {
+                match entry.status {
+                    TaskStatus::Pending => pending += 1,
+                    TaskStatus::Running => running += 1,
+                    TaskStatus::Completed => completed += 1,
+                    TaskStatus::Failed { .. } => failed += 1,
+                }
+            }
+        }
+
+        (pending, running, completed, failed)
     }
 
     pub async fn store_as_primary(
@@ -346,6 +412,42 @@ impl DistributedQueue {
         let get_response: GetTaskResponse = response.json().await?;
 
         Ok(get_response.task)
+    }
+
+    pub async fn fetch_partition(
+        &self,
+        node_id: &NodeId,
+        partition: u32,
+    ) -> Result<Vec<(TaskId, TaskEntry)>> {
+        let node = self
+            .membership
+            .get_member(node_id)
+            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
+
+        let url = format!(
+            "http://{}{}/{}",
+            node.http_addr,
+            ENDPOINT_TASK_PARTITION_DUMP,
+            partition
+        );
+
+        let response = self
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
+            .await?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Task partition dump failed {}", response.status()));
+        }
+
+        let dump: TaskPartitionDumpResponse = response.json().await?;
+        Ok(dump
+            .entries
+            .into_iter()
+            .map(|entry| (entry.task_id, entry.entry))
+            .collect())
     }
 
     pub fn get_task_local(&self, task_id: &TaskId) -> Option<TaskEntry> {

@@ -164,3 +164,19 @@ pub async fn handle_replicate_task(
 
     StatusCode::OK
 }
+
+pub async fn handle_task_partition_dump(
+    Extension(queue): Extension<Arc<DistributedQueue>>,
+    Path(partition): Path<u32>,
+) -> (StatusCode, Json<TaskPartitionDumpResponse>) {
+    let entries = queue
+        .dump_partition(partition)
+        .into_iter()
+        .map(|(task_id, entry)| TaskPartitionEntry { task_id, entry })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(TaskPartitionDumpResponse { partition, entries }),
+    )
+}

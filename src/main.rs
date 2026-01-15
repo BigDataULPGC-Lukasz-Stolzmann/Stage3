@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::Path;
+use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::StatusCode;
 use axum::{
     Router,
@@ -9,11 +9,11 @@ use axum::{
 use distributed_cluster::executor::executor::TaskExecutor;
 use distributed_cluster::executor::handlers::{
     handle_get_task_internal, handle_get_task_status, handle_internal_submit_task,
-    handle_replicate_task, handle_submit_task,
+    handle_replicate_task, handle_submit_task, handle_task_partition_dump,
 };
 use distributed_cluster::executor::protocol::{
     ENDPOINT_INTERNAL_SUBMIT, ENDPOINT_SUBMIT_TASK, ENDPOINT_TASK_INTERNAL_GET,
-    ENDPOINT_TASK_REPLICATE, ENDPOINT_TASK_STATUS,
+    ENDPOINT_TASK_PARTITION_DUMP, ENDPOINT_TASK_REPLICATE, ENDPOINT_TASK_STATUS,
 };
 use distributed_cluster::executor::queue::DistributedQueue;
 use distributed_cluster::executor::registry::TaskHandlerRegistry;
@@ -33,10 +33,11 @@ use distributed_cluster::storage::protocol::{
     ReplicateRequest,
 };
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use sysinfo::System;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{collections::HashSet, hash::Hash, str::FromStr};
-use serde::de::DeserializeOwned;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -158,8 +159,14 @@ async fn main() -> anyhow::Result<()> {
     executor.start().await;
 
     // 3. HTTP Router:
+    let max_body_bytes = std::env::var("MAX_BODY_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20 * 1024 * 1024);
+
     let app = Router::new()
         .route("/health/routes", get(handle_routes))
+        .route("/health/stats", get(handle_stats))
         // Ingestion + search routes
         .route("/ingest/:book_id", post(handle_ingest_gutenberg))
         .route("/ingest/status/:book_id", get(handle_ingest_status))
@@ -226,11 +233,17 @@ async fn main() -> anyhow::Result<()> {
             &format!("{}/:id", ENDPOINT_TASK_INTERNAL_GET),
             get(handle_get_task_internal),
         )
+        .route(
+            &format!("{}/:id", ENDPOINT_TASK_PARTITION_DUMP),
+            get(handle_task_partition_dump),
+        )
         .route(ENDPOINT_INTERNAL_SUBMIT, post(handle_internal_submit_task))
         .route(ENDPOINT_TASK_REPLICATE, post(handle_replicate_task))
+        .layer(DefaultBodyLimit::max(max_body_bytes))
+        .layer(Extension(membership.clone()))
         .layer(Extension(books.clone()))
         .layer(Extension(datalake.clone()))
-        .layer(Extension(queue))
+        .layer(Extension(queue.clone()))
         .layer(Extension(index_map.clone()));
 
     // 4. Spawn membership service:
@@ -243,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
     let books_sync = books.clone();
     let datalake_sync = datalake.clone();
     let index_sync = index_map.clone();
+    let queue_sync = queue.clone();
     let partitioner_sync = partitioner.clone();
     let books_partitioner = partitioner_sync.clone();
     let datalake_partitioner = partitioner_sync.clone();
@@ -256,6 +270,9 @@ async fn main() -> anyhow::Result<()> {
     });
     tokio::spawn(async move {
         sync_loop("index", index_sync, index_partitioner).await;
+    });
+    tokio::spawn(async move {
+        sync_queue_loop(queue_sync, partitioner_sync).await;
     });
 
     // 5. Spawn stats reporter:
@@ -329,19 +346,19 @@ where
         target_partitions.insert(partition);
     }
 
-    let local_id = map.local_node_id();
-
     for partition in target_partitions {
-        if map.has_partition(partition) {
-            continue;
-        }
-
         let owners = partitioner.get_owners(partition);
         if owners.is_empty() {
             continue;
         }
 
-        let source_owner = if owners[0] == local_id {
+        let local_id = map.local_node_id();
+        let is_primary = owners[0] == local_id;
+
+        let source_owner = if is_primary {
+            if map.has_partition(partition) {
+                continue;
+            }
             owners.iter().skip(1).next()
         } else {
             Some(&owners[0])
@@ -378,15 +395,109 @@ where
     Ok(())
 }
 
+async fn sync_queue_loop(queue: Arc<DistributedQueue>, partitioner: Arc<PartitionManager>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+
+    loop {
+        interval.tick().await;
+        if let Err(e) = sync_queue_partitions(&queue, &partitioner).await {
+            tracing::warn!("Queue resync loop failed: {}", e);
+        }
+    }
+}
+
+async fn sync_queue_partitions(
+    queue: &DistributedQueue,
+    partitioner: &PartitionManager,
+) -> anyhow::Result<()> {
+    let mut target_partitions = HashSet::new();
+    for partition in partitioner.my_primary_partitions() {
+        target_partitions.insert(partition);
+    }
+    for partition in partitioner.my_backup_partitions() {
+        target_partitions.insert(partition);
+    }
+
+    let local_id = queue.local_node_id();
+
+    for partition in target_partitions {
+        let owners = partitioner.get_owners(partition);
+        if owners.is_empty() {
+            continue;
+        }
+
+        let is_primary = owners[0] == local_id;
+        let source_owner = if is_primary {
+            if queue.has_partition(partition) {
+                continue;
+            }
+            owners.iter().skip(1).next()
+        } else {
+            Some(&owners[0])
+        };
+
+        let Some(source_owner) = source_owner else {
+            continue;
+        };
+
+        match queue.fetch_partition(source_owner, partition).await {
+            Ok(entries) => {
+                if !entries.is_empty() {
+                    queue.apply_partition_entries(partition, entries);
+                    tracing::info!(
+                        "Resynced queue partition {} from {:?}",
+                        partition,
+                        source_owner
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Queue resync partition {} failed from {:?}: {}",
+                    partition,
+                    source_owner,
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct RoutesResponse {
     routes: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct NodeStatsResponse {
+    node_id: String,
+    gossip_addr: String,
+    http_addr: String,
+    alive_nodes: usize,
+    books_partitions: usize,
+    books_entries: usize,
+    datalake_partitions: usize,
+    datalake_entries: usize,
+    index_partitions: usize,
+    index_entries: usize,
+    queue_partitions: usize,
+    queue_tasks: usize,
+    queue_pending: usize,
+    queue_running: usize,
+    queue_completed: usize,
+    queue_failed: usize,
+    cpu_usage: f32,
+    mem_used_mb: u64,
+    mem_total_mb: u64,
 }
 
 async fn handle_routes() -> Json<RoutesResponse> {
     Json(RoutesResponse {
         routes: vec![
             "/health/routes",
+            "/health/stats",
             "/ingest/:book_id",
             "/ingest/status/:book_id",
             "/search",
@@ -410,8 +521,49 @@ async fn handle_routes() -> Json<RoutesResponse> {
             "/task_status/:id",
             "/internal/task/:id",
             "/internal/submit_task",
+            "/internal/task_partition/:id",
             "/task_replicate",
         ],
+    })
+}
+
+async fn handle_stats(
+    Extension(books): Extension<Arc<DistributedMap<String, BookMetadata>>>,
+    Extension(datalake): Extension<Arc<DistributedMap<String, RawDocument>>>,
+    Extension(index_map): Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    Extension(queue): Extension<Arc<DistributedQueue>>,
+    Extension(membership): Extension<Arc<MembershipService>>,
+) -> Json<NodeStatsResponse> {
+    let alive_nodes = membership.get_alive_members();
+    let (pending, running, completed, failed) = queue.local_task_status_counts();
+    let node = &membership.local_node;
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    sys.refresh_memory();
+    let cpu_usage = sys.global_cpu_info().cpu_usage();
+    let mem_total_mb = sys.total_memory() / 1024;
+    let mem_used_mb = sys.used_memory() / 1024;
+
+    Json(NodeStatsResponse {
+        node_id: node.id.0.clone(),
+        gossip_addr: node.gossip_addr.to_string(),
+        http_addr: node.http_addr.to_string(),
+        alive_nodes: alive_nodes.len(),
+        books_partitions: books.local_partition_count(),
+        books_entries: books.local_entry_count(),
+        datalake_partitions: datalake.local_partition_count(),
+        datalake_entries: datalake.local_entry_count(),
+        index_partitions: index_map.local_partition_count(),
+        index_entries: index_map.local_entry_count(),
+        queue_partitions: queue.local_partition_count(),
+        queue_tasks: queue.local_task_count(),
+        queue_pending: pending,
+        queue_running: running,
+        queue_completed: completed,
+        queue_failed: failed,
+        cpu_usage,
+        mem_used_mb,
+        mem_total_mb,
     })
 }
 

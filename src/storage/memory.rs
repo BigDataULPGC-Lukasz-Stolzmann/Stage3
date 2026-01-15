@@ -263,6 +263,17 @@ where
         self.membership.local_node.id.clone()
     }
 
+    pub fn local_partition_count(&self) -> usize {
+        self.local_data.len()
+    }
+
+    pub fn local_entry_count(&self) -> usize {
+        self.local_data
+            .iter()
+            .map(|entry| entry.value().len())
+            .sum()
+    }
+
     pub fn store_replica(&self, partition: u32, op_id: String, key: K, value: V) -> Result<()> {
         if !self.should_process(&op_id) {
             return Ok(());
@@ -303,8 +314,8 @@ where
         let primary_owner = &owners[0];
 
         if primary_owner == &self.membership.local_node.id {
-            if owners.len() > 1 {
-                if let Ok(value) = self.fetch_remote(&owners[1], key).await {
+            for backup in owners.iter().skip(1) {
+                if let Ok(value) = self.fetch_remote(backup, key).await {
                     if value.is_some() {
                         return value;
                     }

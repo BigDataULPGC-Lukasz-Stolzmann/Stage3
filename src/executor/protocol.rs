@@ -7,6 +7,7 @@ pub const ENDPOINT_INTERNAL_SUBMIT: &str = "/internal/submit_task";
 pub const ENDPOINT_TASK_INTERNAL_GET: &str = "/internal/get_task";
 pub const ENDPOINT_TASK_STATUS: &str = "/task/status";
 pub const ENDPOINT_TASK_REPLICATE: &str = "/internal/replicate_task";
+pub const ENDPOINT_TASK_PARTITION_DUMP: &str = "/internal/task_partition";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubmitTaskRequest {
@@ -43,4 +44,16 @@ pub struct ReplicateTaskRequest {
     pub partition: u32,
     pub task_id: TaskId,
     pub entry: TaskEntry,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskPartitionEntry {
+    pub task_id: TaskId,
+    pub entry: TaskEntry,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskPartitionDumpResponse {
+    pub partition: u32,
+    pub entries: Vec<TaskPartitionEntry>,
 }
