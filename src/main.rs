@@ -31,6 +31,7 @@ use distributed_cluster::storage::protocol::{
     ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PUT, ENDPOINT_REPLICATE,
     ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest,
 };
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -155,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. HTTP Router:
     let app = Router::new()
+        .route("/health/routes", get(handle_routes))
         // Ingestion + search routes
         .route("/ingest/:book_id", post(handle_ingest_gutenberg))
         .route("/ingest/status/:book_id", get(handle_ingest_status))
@@ -254,6 +256,43 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[derive(Serialize)]
+struct RoutesResponse {
+    routes: Vec<&'static str>,
+}
+
+async fn handle_routes() -> Json<RoutesResponse> {
+    Json(RoutesResponse {
+        routes: vec![
+            "/health/routes",
+            "/ingest/:book_id",
+            "/ingest/status/:book_id",
+            "/search",
+            "/books",
+            "/books/put",
+            "/books/get/:key",
+            "/books/internal/get/:key",
+            "/books/forward_put",
+            "/books/replicate",
+            "/datalake/put",
+            "/datalake/get/:key",
+            "/datalake/internal/get/:key",
+            "/datalake/forward_put",
+            "/datalake/replicate",
+            "/index/put",
+            "/index/get/:key",
+            "/index/internal/get/:key",
+            "/index/forward_put",
+            "/index/replicate",
+            "/submit_task",
+            "/task_status/:id",
+            "/internal/task/:id",
+            "/internal/submit_task",
+            "/task_replicate",
+        ],
+    })
 }
 
 async fn handle_get_internal_book(
