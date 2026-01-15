@@ -81,10 +81,8 @@ mod tests {
 
         let owners = partitioner.get_owners(0);
 
-        // Z jednym nodem, primary i backup to ten sam node
-        assert_eq!(owners.len(), 2);
-        // W przypadku jednego noda, oba wskazują na ten sam node
-        assert_eq!(owners[0], owners[1]);
+        // Z jednym nodem dostajemy tylko primary (replication_factor ogranicza sie do liczby nodow)
+        assert_eq!(owners.len(), 1);
     }
 
     #[tokio::test]

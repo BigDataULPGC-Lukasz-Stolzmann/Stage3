@@ -19,6 +19,9 @@ use distributed_cluster::executor::queue::DistributedQueue;
 use distributed_cluster::executor::registry::TaskHandlerRegistry;
 use distributed_cluster::executor::types::Task;
 use distributed_cluster::membership::service::MembershipService;
+use distributed_cluster::ingestion::handlers::{handle_ingest_gutenberg, handle_ingest_status};
+use distributed_cluster::ingestion::types::RawDocument;
+use distributed_cluster::search::handlers::{handle_search, handle_create_book};
 use distributed_cluster::search::tokenizer::tokenize_text;
 use distributed_cluster::search::types::BookMetadata;
 use distributed_cluster::storage::handlers::*;
@@ -28,10 +31,8 @@ use distributed_cluster::storage::protocol::{
     ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PUT, ENDPOINT_REPLICATE,
     ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest,
 };
-use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -87,11 +88,22 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Node ID: {:?}", membership.local_node.id);
 
     // 2. Storage layer:
-    let partitioner = PartitionManager::new(membership.clone());
+    let replication_factor = std::env::var("REPLICATION_FACTOR")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2);
+    let partitioner = PartitionManager::new_with_replication(membership.clone(), replication_factor);
 
-    let books = Arc::new(DistributedMap::<String, BookMetadata>::new(
+    let books = Arc::new(DistributedMap::<String, BookMetadata>::new_with_base(
         membership.clone(),
         partitioner.clone(),
+        "/books",
+    ));
+
+    let datalake = Arc::new(DistributedMap::<String, RawDocument>::new_with_base(
+        membership.clone(),
+        partitioner.clone(),
+        "/datalake",
     ));
 
     let queue = Arc::new(DistributedQueue::new(
@@ -99,31 +111,40 @@ async fn main() -> anyhow::Result<()> {
         partitioner.clone(),
     ));
 
-    let index_map = Arc::new(DistributedMap::<String, Vec<String>>::new(
+    let index_map = Arc::new(DistributedMap::<String, Vec<String>>::new_with_base(
         membership.clone(),
         partitioner.clone(),
+        "/index",
     ));
     let task_registry = TaskHandlerRegistry::new();
 
     let index_map_clone = index_map.clone();
-    task_registry.register("index_book", move |task| {
+    let datalake_clone = datalake.clone();
+    task_registry.register("index_document", move |task| {
         let index_map = index_map_clone.clone();
+        let datalake = datalake_clone.clone();
         async move {
             let Task::Execute { payload, .. } = task;
-            let metadata: BookMetadata = serde_json::from_value(payload)?;
+            let payload: distributed_cluster::ingestion::types::IndexTaskPayload =
+                serde_json::from_value(payload)?;
 
-            let tokens = tokenize_text(&metadata.title);
+            let Some(raw_doc) = datalake.get(&payload.book_id).await else {
+                tracing::warn!("Index task skipped; missing doc {}", payload.book_id);
+                return Ok(());
+            };
+
+            let tokens = tokenize_text(&raw_doc.body);
             for token in tokens {
                 let mut book_ids = index_map.get(&token).await.unwrap_or_default();
 
-                if !book_ids.contains(&metadata.book_id) {
-                    book_ids.push(metadata.book_id.clone());
+                if !book_ids.contains(&payload.book_id) {
+                    book_ids.push(payload.book_id.clone());
                 }
 
                 index_map.put(token, book_ids).await?;
             }
 
-            tracing::info!("Indexed book {}", metadata.book_id);
+            tracing::info!("Indexed book {}", payload.book_id);
             Ok(())
         }
     });
@@ -134,15 +155,50 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. HTTP Router:
     let app = Router::new()
-        // Storage routes
-        .route(ENDPOINT_PUT, post(handle_put_book))
-        .route(&format!("{}/:key", ENDPOINT_GET), get(handle_get_book))
-        .route(
-            &format!("{}/:key", ENDPOINT_GET_INTERNAL),
-            get(handle_get_internal_book),
+        // Ingestion + search routes
+        .route("/ingest/:book_id", post(handle_ingest_gutenberg))
+        .route("/ingest/status/:book_id", get(handle_ingest_status))
+        .route("/search", get(handle_search))
+        .route("/books", post(handle_create_book))
+        // Metadata storage routes
+        .nest(
+            "/books",
+            Router::new()
+                .route(ENDPOINT_PUT, post(handle_put_book))
+                .route(&format!("{}/:key", ENDPOINT_GET), get(handle_get_book))
+                .route(
+                    &format!("{}/:key", ENDPOINT_GET_INTERNAL),
+                    get(handle_get_internal_book),
+                )
+                .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_book))
+                .route(ENDPOINT_REPLICATE, post(handle_replicate_book)),
         )
-        .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_book))
-        .route(ENDPOINT_REPLICATE, post(handle_replicate_book))
+        // Datalake routes
+        .nest(
+            "/datalake",
+            Router::new()
+                .route(ENDPOINT_PUT, post(handle_put_datalake))
+                .route(&format!("{}/:key", ENDPOINT_GET), get(handle_get_datalake))
+                .route(
+                    &format!("{}/:key", ENDPOINT_GET_INTERNAL),
+                    get(handle_get_internal_datalake),
+                )
+                .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_datalake))
+                .route(ENDPOINT_REPLICATE, post(handle_replicate_datalake)),
+        )
+        // Index routes
+        .nest(
+            "/index",
+            Router::new()
+                .route(ENDPOINT_PUT, post(handle_put_index))
+                .route(&format!("{}/:key", ENDPOINT_GET), get(handle_get_index))
+                .route(
+                    &format!("{}/:key", ENDPOINT_GET_INTERNAL),
+                    get(handle_get_internal_index),
+                )
+                .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_index))
+                .route(ENDPOINT_REPLICATE, post(handle_replicate_index)),
+        )
         // Executor routes
         .route(ENDPOINT_SUBMIT_TASK, post(handle_submit_task))
         .route(
@@ -156,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
         .route(ENDPOINT_INTERNAL_SUBMIT, post(handle_internal_submit_task))
         .route(ENDPOINT_TASK_REPLICATE, post(handle_replicate_task))
         .layer(Extension(books))
+        .layer(Extension(datalake))
         .layer(Extension(queue))
         .layer(Extension(index_map));
 
@@ -232,4 +289,74 @@ async fn handle_replicate_book(
     json: Json<ReplicateRequest>,
 ) -> (StatusCode, Json<PutResponse>) {
     handle_replicate::<String, BookMetadata>(map, json).await
+}
+
+async fn handle_get_internal_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get_internal::<String, RawDocument>(map, json).await
+}
+
+async fn handle_get_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get::<String, RawDocument>(map, json).await
+}
+
+async fn handle_forward_put_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    json: Json<ForwardPutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_forward_put::<String, RawDocument>(map, json).await
+}
+
+async fn handle_put_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    json: Json<PutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_put::<String, RawDocument>(map, json).await
+}
+
+async fn handle_replicate_datalake(
+    map: Extension<Arc<DistributedMap<String, RawDocument>>>,
+    json: Json<ReplicateRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_replicate::<String, RawDocument>(map, json).await
+}
+
+async fn handle_get_internal_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get_internal::<String, Vec<String>>(map, json).await
+}
+
+async fn handle_get_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    json: Path<String>,
+) -> (StatusCode, Json<GetResponse>) {
+    handle_get::<String, Vec<String>>(map, json).await
+}
+
+async fn handle_forward_put_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    json: Json<ForwardPutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_forward_put::<String, Vec<String>>(map, json).await
+}
+
+async fn handle_put_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    json: Json<PutRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_put::<String, Vec<String>>(map, json).await
+}
+
+async fn handle_replicate_index(
+    map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
+    json: Json<ReplicateRequest>,
+) -> (StatusCode, Json<PutResponse>) {
+    handle_replicate::<String, Vec<String>>(map, json).await
 }

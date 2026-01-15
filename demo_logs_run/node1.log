@@ -1,0 +1,33 @@
+[2m2026-01-15T13:52:49.897248Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Starting node on 127.0.0.1:5000
+[2m2026-01-15T13:52:49.897301Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Starting as seed node (founder)
+[2m2026-01-15T13:52:49.897561Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Node ID: NodeId("34d979fa-95c7-4971-92bd-c01d364d290b")
+[2m2026-01-15T13:52:49.930251Z[0m [32m INFO[0m [2mdistributed_cluster::executor::registry[0m[2m:[0m Registered task handler: index_document
+[2m2026-01-15T13:52:49.930279Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Starting 4 task workers
+[2m2026-01-15T13:52:49.930318Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Task executor started with 4 workers
+[2m2026-01-15T13:52:49.930403Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 0 started
+[2m2026-01-15T13:52:49.930451Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 1 started
+[2m2026-01-15T13:52:49.930523Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 2 started
+[2m2026-01-15T13:52:49.930587Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 3 started
+[2m2026-01-15T13:52:49.930695Z[0m [32m INFO[0m [2mnode[0m[2m:[0m HTTP server listening on 127.0.0.1:6000
+[2m2026-01-15T13:52:49.930704Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Press Ctrl+C to shutdown
+[2m2026-01-15T13:52:49.930715Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Starting membership service...
+[2m2026-01-15T13:52:49.930772Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m All background tasks started
+[2m2026-01-15T13:52:49.932148Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Cluster stats: 1 alive nodes
+[2m2026-01-15T13:52:49.932175Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("34d979fa-95c7-4971-92bd-c01d364d290b") gossip=127.0.0.1:5000 http=127.0.0.1:6000 (inc=1)
+[2m2026-01-15T13:52:50.900672Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Node NodeId("21b0b6a5-1434-44cb-951d-2edb958ac5b4") joining cluster at 127.0.0.1:5001
+[2m2026-01-15T13:52:50.900723Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Cluster size now: 2
+[2m2026-01-15T13:52:51.904403Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Node NodeId("1288299d-b33d-4595-943d-da72a29be647") joining cluster at 127.0.0.1:5002
+[2m2026-01-15T13:52:51.904463Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Cluster size now: 3
+[2m2026-01-15T13:52:53.908114Z[0m [31mERROR[0m [2mdistributed_cluster::storage::memory[0m[2m:[0m GET: Failed to fetch from owner: GET request failed 404 Not Found
+[2m2026-01-15T13:52:54.931975Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Cluster stats: 3 alive nodes
+[2m2026-01-15T13:52:54.932019Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("1288299d-b33d-4595-943d-da72a29be647") gossip=127.0.0.1:5002 http=127.0.0.1:6002 (inc=1)
+[2m2026-01-15T13:52:54.932028Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("21b0b6a5-1434-44cb-951d-2edb958ac5b4") gossip=127.0.0.1:5001 http=127.0.0.1:6001 (inc=1)
+[2m2026-01-15T13:52:54.932034Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("34d979fa-95c7-4971-92bd-c01d364d290b") gossip=127.0.0.1:5000 http=127.0.0.1:6000 (inc=1)
+[2m2026-01-15T13:52:59.374180Z[0m [32m INFO[0m [2mdistributed_cluster::storage::handlers[0m[2m:[0m Stored replica for partition 211
+[2m2026-01-15T13:52:59.376409Z[0m [32m INFO[0m [2mdistributed_cluster::storage::handlers[0m[2m:[0m Stored replica for partition 211
+[2m2026-01-15T13:52:59.385108Z[0m [31mERROR[0m [2mdistributed_cluster::storage::memory[0m[2m:[0m GET: Failed to fetch from owner: GET request failed 404 Not Found
+[2m2026-01-15T13:52:59.932284Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Cluster stats: 3 alive nodes
+[2m2026-01-15T13:52:59.932332Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("1288299d-b33d-4595-943d-da72a29be647") gossip=127.0.0.1:5002 http=127.0.0.1:6002 (inc=1)
+[2m2026-01-15T13:52:59.932355Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("21b0b6a5-1434-44cb-951d-2edb958ac5b4") gossip=127.0.0.1:5001 http=127.0.0.1:6001 (inc=1)
+[2m2026-01-15T13:52:59.932372Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("34d979fa-95c7-4971-92bd-c01d364d290b") gossip=127.0.0.1:5000 http=127.0.0.1:6000 (inc=1)
+[2m2026-01-15T13:53:01.915824Z[0m [31mERROR[0m [2mdistributed_cluster::storage::memory[0m[2m:[0m GET: Failed to fetch from owner: error sending request for url (http://127.0.0.1:6001/index/internal/get/the): error trying to connect: tcp connect error: Connection refused (os error 111)

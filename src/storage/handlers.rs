@@ -42,7 +42,7 @@ where
         }
     };
 
-    match map.put(key, value).await {
+    match map.put_with_op(key, value, req.op_id).await {
         Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
         Err(e) => {
             tracing::error!("Failed to put: {}", e);
@@ -169,7 +169,10 @@ where
         }
     };
 
-    match map.store_as_primary(req.partition, key, value).await {
+    match map
+        .store_as_primary(req.partition, req.op_id, key, value)
+        .await
+    {
         Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
         Err(e) => {
             tracing::error!("Failed to put local: {}", e);
@@ -213,9 +216,17 @@ where
         }
     };
 
-    map.store_local(req.partition, key, value);
-
-    tracing::info!("Stored replica for partition {}", req.partition);
-
-    (StatusCode::OK, Json(PutResponse { success: true }))
+    match map.store_replica(req.partition, req.op_id, key, value) {
+        Ok(_) => {
+            tracing::info!("Stored replica for partition {}", req.partition);
+            (StatusCode::OK, Json(PutResponse { success: true }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to store replica: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(PutResponse { success: false }),
+            )
+        }
+    }
 }

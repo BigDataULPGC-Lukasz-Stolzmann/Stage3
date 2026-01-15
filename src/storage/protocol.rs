@@ -9,6 +9,7 @@ pub const ENDPOINT_GET_INTERNAL: &str = "/internal/get";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplicateRequest {
     pub partition: u32,
+    pub op_id: String,
     pub key: String,
     pub value_json: String,
 }
@@ -16,12 +17,14 @@ pub struct ReplicateRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ForwardPutRequest {
     pub partition: u32,
+    pub op_id: String,
     pub key: String,
     pub value_json: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PutRequest {
+    pub op_id: String,
     pub key: String,
     pub value_json: String,
 }

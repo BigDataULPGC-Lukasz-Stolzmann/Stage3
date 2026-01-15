@@ -11,9 +11,16 @@ pub struct PartitionManager {
 
 impl PartitionManager {
     pub fn new(membership: Arc<MembershipService>) -> Arc<Self> {
+        Self::new_with_replication(membership, 2)
+    }
+
+    pub fn new_with_replication(
+        membership: Arc<MembershipService>,
+        replication_factor: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             num_partitions: 256,
-            replication_factor: 1,
+            replication_factor: replication_factor.max(1),
             membership,
         })
     }
@@ -32,9 +39,13 @@ impl PartitionManager {
         }
         let mut node_ids: Vec<NodeId> = alive_nodes.into_iter().map(|node| node.id).collect();
         node_ids.sort_by(|a, b| a.0.cmp(&b.0));
+
         let primary_idx = (partition as usize) % node_ids.len();
-        let backup_idx = (partition as usize + 1) % node_ids.len();
-        vec![node_ids[primary_idx].clone(), node_ids[backup_idx].clone()]
+        let replica_count = self.replication_factor.min(node_ids.len());
+
+        (0..replica_count)
+            .map(|offset| node_ids[(primary_idx + offset) % node_ids.len()].clone())
+            .collect()
     }
 
     pub fn my_primary_partitions(&self) -> Vec<u32> {
@@ -54,7 +65,7 @@ impl PartitionManager {
         (0..self.num_partitions)
             .filter(|&partition| {
                 let owners = self.get_owners(partition);
-                owners.len() > 1 && &owners[1] == my_id
+                owners.iter().skip(1).any(|owner| owner == my_id)
             })
             .collect()
     }

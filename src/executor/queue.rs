@@ -97,8 +97,8 @@ impl DistributedQueue {
         self.store_local(partition, task_id.clone(), entry.clone());
 
         let owners = self.partitioner.get_owners(partition);
-        if owners.len() > 1 {
-            self.replicate_task_to_backup(&owners[1], partition, task_id, entry)
+        for backup in owners.iter().skip(1) {
+            self.replicate_task_to_backup(backup, partition, task_id.clone(), entry.clone())
                 .await?;
         }
 
@@ -124,14 +124,12 @@ impl DistributedQueue {
         };
 
         let response = self
-            .http_client
-            .post(format!(
-                "http://{}{}",
-                node.http_addr, ENDPOINT_TASK_REPLICATE
-            ))
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(2))
-            .send()
+            .post_with_retry(
+                format!("http://{}{}", node.http_addr, ENDPOINT_TASK_REPLICATE),
+                &payload,
+                std::time::Duration::from_millis(500),
+                3,
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -169,11 +167,12 @@ impl DistributedQueue {
         };
 
         let response = self
-            .http_client
-            .post(format!("http://{}/internal/submit_task", node.http_addr))
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
+            .post_with_retry(
+                format!("http://{}/internal/submit_task", node.http_addr),
+                &payload,
+                std::time::Duration::from_millis(500),
+                3,
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -305,12 +304,14 @@ impl DistributedQueue {
                 let partition = self.partitioner.get_partition(&task_id.0);
                 let owners = self.partitioner.get_owners(partition);
                 if !owners.is_empty() && owners[0] != self.membership.local_node.id {
-                    match self.fetch_remote(&owners[0], &task_id.0).await {
-                        Ok(Some(task)) => return Some(task),
-                        Ok(None) => return None,
-                        Err(e) => {
-                            tracing::warn!("Failed to fetch remote task: {}", e);
-                            return None;
+                    for owner in owners.iter() {
+                        match self.fetch_remote(owner, &task_id.0).await {
+                            Ok(Some(task)) => return Some(task),
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::warn!("Failed to fetch remote task: {}", e);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -335,10 +336,7 @@ impl DistributedQueue {
         );
 
         let response = self
-            .http_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
             .await?;
 
         if !response.status().is_success() {
@@ -360,5 +358,71 @@ impl DistributedQueue {
         }
 
         None
+    }
+
+    async fn post_with_retry<T: serde::Serialize>(
+        &self,
+        url: String,
+        payload: &T,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .post(url.clone())
+                .json(payload)
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
+    }
+
+    async fn get_with_retry(
+        &self,
+        url: String,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .get(url.clone())
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
     }
 }

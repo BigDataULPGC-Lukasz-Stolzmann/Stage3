@@ -1,0 +1,29 @@
+[2m2026-01-15T13:52:51.903821Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Starting node on 127.0.0.1:5002
+[2m2026-01-15T13:52:51.903873Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Seed nodes: [127.0.0.1:5000]
+[2m2026-01-15T13:52:51.904173Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Joining cluster via 1 seed node(s)
+[2m2026-01-15T13:52:51.904278Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Sent join request to 127.0.0.1:5000
+[2m2026-01-15T13:52:51.904309Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Node ID: NodeId("1288299d-b33d-4595-943d-da72a29be647")
+[2m2026-01-15T13:52:51.937697Z[0m [32m INFO[0m [2mdistributed_cluster::executor::registry[0m[2m:[0m Registered task handler: index_document
+[2m2026-01-15T13:52:51.937733Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Starting 4 task workers
+[2m2026-01-15T13:52:51.937799Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Task executor started with 4 workers
+[2m2026-01-15T13:52:51.938019Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 0 started
+[2m2026-01-15T13:52:51.938175Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 1 started
+[2m2026-01-15T13:52:51.938227Z[0m [32m INFO[0m [2mnode[0m[2m:[0m HTTP server listening on 127.0.0.1:6002
+[2m2026-01-15T13:52:51.938237Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Press Ctrl+C to shutdown
+[2m2026-01-15T13:52:51.938243Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 2 started
+[2m2026-01-15T13:52:51.938265Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 3 started
+[2m2026-01-15T13:52:51.938368Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Starting membership service...
+[2m2026-01-15T13:52:51.938411Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m All background tasks started
+[2m2026-01-15T13:52:51.938523Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Cluster stats: 1 alive nodes
+[2m2026-01-15T13:52:51.938559Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("1288299d-b33d-4595-943d-da72a29be647") gossip=127.0.0.1:5002 http=127.0.0.1:6002 (inc=1)
+[2m2026-01-15T13:52:52.432225Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Discovered new member via ping: NodeId("34d979fa-95c7-4971-92bd-c01d364d290b") at 127.0.0.1:5000
+[2m2026-01-15T13:52:52.435328Z[0m [32m INFO[0m [2mdistributed_cluster::membership::service[0m[2m:[0m Discovered new member via ping: NodeId("21b0b6a5-1434-44cb-951d-2edb958ac5b4") at 127.0.0.1:5001
+[2m2026-01-15T13:52:56.939032Z[0m [32m INFO[0m [2mnode[0m[2m:[0m Cluster stats: 3 alive nodes
+[2m2026-01-15T13:52:56.939089Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("1288299d-b33d-4595-943d-da72a29be647") gossip=127.0.0.1:5002 http=127.0.0.1:6002 (inc=1)
+[2m2026-01-15T13:52:56.939100Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("21b0b6a5-1434-44cb-951d-2edb958ac5b4") gossip=127.0.0.1:5001 http=127.0.0.1:6001 (inc=1)
+[2m2026-01-15T13:52:56.939107Z[0m [32m INFO[0m [2mnode[0m[2m:[0m   - NodeId("34d979fa-95c7-4971-92bd-c01d364d290b") gossip=127.0.0.1:5000 http=127.0.0.1:6000 (inc=1)
+[2m2026-01-15T13:52:59.377779Z[0m [32m INFO[0m [2mdistributed_cluster::executor::queue[0m[2m:[0m Stored task in partition 168
+[2m2026-01-15T13:52:59.385031Z[0m [32m INFO[0m [2mdistributed_cluster::executor::executor[0m[2m:[0m Worker 0 claimed task 50426286-ef52-492f-84be-82a864628d75 (handler: "index_document")
+[2m2026-01-15T13:52:59.871451Z[0m [31mERROR[0m [2mdistributed_cluster::storage::memory[0m[2m:[0m GET: Failed to fetch from owner: error sending request for url (http://127.0.0.1:6001/datalake/internal/get/1342): error trying to connect: tcp connect error: Connection refused (os error 111)
+[2m2026-01-15T13:52:59.872724Z[0m [33m WARN[0m [2mnode[0m[2m:[0m Index task skipped; missing doc 1342
+[2m2026-01-15T13:52:59.872762Z[0m [32m INFO[0m [2mdistributed_cluster::executor::queue[0m[2m:[0m Task 50426286-ef52-492f-84be-82a864628d75 completed

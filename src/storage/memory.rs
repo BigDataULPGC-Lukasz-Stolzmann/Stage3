@@ -9,12 +9,16 @@ use serde::de::DeserializeOwned;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 pub struct DistributedMap<K, V> {
     local_data: Arc<DashMap<u32, DashMap<K, V>>>,
+    processed_ops: Arc<DashMap<String, u64>>,
     membership: Arc<MembershipService>,
     partitioner: Arc<PartitionManager>,
     http_client: reqwest::Client,
+    base_path: String,
 }
 
 impl<K, V> DistributedMap<K, V>
@@ -24,19 +28,117 @@ where
     V: Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     pub fn new(membership: Arc<MembershipService>, partitioner: Arc<PartitionManager>) -> Self {
+        Self::new_with_base(membership, partitioner, "")
+    }
+
+    pub fn new_with_base(
+        membership: Arc<MembershipService>,
+        partitioner: Arc<PartitionManager>,
+        base_path: &str,
+    ) -> Self {
         let local_data: Arc<DashMap<u32, DashMap<K, V>>> = Arc::new(DashMap::new());
+        let cleaned = base_path.trim_end_matches('/');
+        let base_path = if cleaned.is_empty() {
+            String::new()
+        } else if cleaned.starts_with('/') {
+            cleaned.to_string()
+        } else {
+            format!("/{}", cleaned)
+        };
+
         Self {
             local_data,
+            processed_ops: Arc::new(DashMap::new()),
             membership,
             partitioner,
             http_client: reqwest::Client::new(),
+            base_path,
         }
+    }
+
+    fn should_process(&self, op_id: &str) -> bool {
+        if self.processed_ops.contains_key(op_id) {
+            return false;
+        }
+        if self.processed_ops.len() > 10_000 {
+            self.processed_ops.clear();
+        }
+        self.processed_ops
+            .insert(op_id.to_string(), now_ms());
+        true
+    }
+
+    async fn post_with_retry<T: serde::Serialize>(
+        &self,
+        url: String,
+        payload: &T,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .post(url.clone())
+                .json(payload)
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
+    }
+
+    async fn get_with_retry(
+        &self,
+        url: String,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .get(url.clone())
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
     }
 
     async fn forward_put(
         &self,
         primary_node_id: &NodeId,
         partition: u32,
+        op_id: String,
         key: K,
         value: V,
     ) -> Result<()> {
@@ -49,15 +151,17 @@ where
         let value_json = serde_json::to_string(&value)?;
         let payload = ForwardPutRequest {
             partition,
+            op_id,
             key: key.to_string(),
             value_json,
         };
         let response = self
-            .http_client
-            .post(format!("http://{}{}", addr, ENDPOINT_FORWARD_PUT))
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
+            .post_with_retry(
+                format!("http://{}{}{}", addr, self.base_path, ENDPOINT_FORWARD_PUT),
+                &payload,
+                std::time::Duration::from_millis(500),
+                3,
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -67,12 +171,21 @@ where
         Ok(())
     }
 
-    pub async fn store_as_primary(&self, partition: u32, key: K, value: V) -> Result<()> {
+    pub async fn store_as_primary(
+        &self,
+        partition: u32,
+        op_id: String,
+        key: K,
+        value: V,
+    ) -> Result<()> {
+        if !self.should_process(&op_id) {
+            return Ok(());
+        }
         self.store_local(partition, key.clone(), value.clone());
 
         let owners = self.partitioner.get_owners(partition);
-        if owners.len() > 1 {
-            self.replicate_to_backup(&owners[1], partition, key, value)
+        for backup in owners.iter().skip(1) {
+            self.replicate_to_backup(backup, partition, op_id.clone(), key.clone(), value.clone())
                 .await?;
         }
 
@@ -83,6 +196,7 @@ where
         &self,
         backup_node_id: &NodeId,
         partition: u32,
+        op_id: String,
         key: K,
         value: V,
     ) -> Result<()> {
@@ -95,15 +209,17 @@ where
         let value_json = serde_json::to_string(&value)?;
         let payload = ReplicateRequest {
             partition,
+            op_id,
             key: key.to_string(),
             value_json,
         };
         let response = self
-            .http_client
-            .post(format!("http://{}{}", addr, ENDPOINT_REPLICATE))
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(2))
-            .send()
+            .post_with_retry(
+                format!("http://{}{}{}", addr, self.base_path, ENDPOINT_REPLICATE),
+                &payload,
+                std::time::Duration::from_millis(500),
+                3,
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -118,6 +234,14 @@ where
             .entry(partition)
             .or_insert_with(|| DashMap::new());
         partition_map.insert(key, value);
+    }
+
+    pub fn store_replica(&self, partition: u32, op_id: String, key: K, value: V) -> Result<()> {
+        if !self.should_process(&op_id) {
+            return Ok(());
+        }
+        self.store_local(partition, key, value);
+        Ok(())
     }
 
     pub fn get_local(&self, key: &K) -> Option<V> {
@@ -170,11 +294,14 @@ where
             Err(e) => {
                 tracing::error!("GET: Failed to fetch from owner: {}", e);
 
-                if owners.len() > 1 {
-                    self.fetch_remote(&owners[1], key).await.ok().flatten()
-                } else {
-                    None
+                for backup in owners.iter().skip(1) {
+                    if let Ok(value) = self.fetch_remote(backup, key).await {
+                        if value.is_some() {
+                            return value;
+                        }
+                    }
                 }
+                None
             }
         }
     }
@@ -188,17 +315,15 @@ where
         let addr = node.http_addr;
 
         let url = format!(
-            "http://{}{}/{}",
+            "http://{}{}{}/{}",
             addr,
+            self.base_path,
             ENDPOINT_GET_INTERNAL,
             key.to_string()
         );
 
         let response = self
-            .http_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
             .await?;
 
         if !response.status().is_success() {
@@ -225,14 +350,25 @@ where
 
         let owners = self.partitioner.get_owners(partition);
         if owners.len() > 1 {
-            self.replicate_to_backup(&owners[1], partition, key, value)
-                .await?;
+            let op_id = Uuid::new_v4().to_string();
+            for backup in owners.iter().skip(1) {
+                self.replicate_to_backup(backup, partition, op_id.clone(), key.clone(), value.clone())
+                    .await?;
+            }
         }
 
         Ok(())
     }
 
     pub async fn put(&self, key: K, value: V) -> Result<()> {
+        let op_id = Uuid::new_v4().to_string();
+        self.put_with_op(key, value, op_id).await
+    }
+
+    pub async fn put_with_op(&self, key: K, value: V, op_id: String) -> Result<()> {
+        if !self.should_process(&op_id) {
+            return Ok(());
+        }
         let partition = self.partitioner.get_partition(&key.to_string());
         let owners = self.partitioner.get_owners(partition);
         if owners.is_empty() {
@@ -241,25 +377,33 @@ where
             return Ok(());
         }
         if self.membership.local_node.id != owners[0] {
-            self.forward_put(&owners[0], partition, key, value).await?;
+            self.forward_put(&owners[0], partition, op_id, key, value)
+                .await?;
             return Ok(());
         } else {
             self.store_local(partition, key.clone(), value.clone());
 
             if owners.len() > 1 {
-                self.replicate_to_backup(&owners[1], partition, key, value)
+                for backup in owners.iter().skip(1) {
+                    self.replicate_to_backup(
+                        backup,
+                        partition,
+                        op_id.clone(),
+                        key.clone(),
+                        value.clone(),
+                    )
                     .await?;
-                // let backup = owners[1].clone();
-                // let self_clone = self.clone();
-                //
-                // tokio::spawn(async move {
-                //     let _ = self_clone
-                //         .replicate_to_backup(&backup, partition, key, value)
-                //         .await;
-                // });
+                }
             }
         }
 
         Ok(())
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

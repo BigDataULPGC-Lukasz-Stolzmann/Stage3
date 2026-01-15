@@ -32,9 +32,9 @@ pub struct CreateBookResponse {
 }
 
 pub async fn handle_create_book(
-    Json(req): Json<CreateBookRequest>,
     Extension(books_map): Extension<Arc<DistributedMap<String, BookMetadata>>>,
     Extension(queue): Extension<Arc<DistributedQueue>>,
+    Json(req): Json<CreateBookRequest>,
 ) -> (StatusCode, Json<CreateBookResponse>) {
     let book_id = uuid::Uuid::new_v4().to_string();
     let book_meta = BookMetadata {
@@ -51,8 +51,11 @@ pub async fn handle_create_book(
         Ok(_) => {
             tracing::debug!("Successfully created book");
             let task = Task::Execute {
-                handler: "index_book".to_string(),
-                payload: serde_json::to_value(&book_meta).unwrap(),
+                handler: "index_document".to_string(),
+                payload: serde_json::to_value(&crate::ingestion::types::IndexTaskPayload {
+                    book_id: book_id.clone(),
+                })
+                .unwrap(),
             };
             if let Err(e) = queue.submit(task).await {
                 tracing::error!("Failed to submit index task: {:?}", e);
