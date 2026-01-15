@@ -168,9 +168,16 @@ async fn api_stats(
 
 fn resolve_node_url(state: &AppState, override_url: Option<String>) -> String {
     let candidate = override_url.unwrap_or_else(|| state.node_url.clone());
-    if candidate.starts_with("http://") || candidate.starts_with("https://") {
-        candidate.trim_end_matches('/').to_string()
-    } else {
-        state.node_url.clone()
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return state.node_url.clone();
     }
+
+    let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    };
+
+    normalized.trim_end_matches('/').to_string()
 }

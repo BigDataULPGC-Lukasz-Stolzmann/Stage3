@@ -277,11 +277,17 @@
     }
 
     function renderStats(stats) {
+      const fmtMem = (mb) => {
+        if (typeof mb !== "number") return mb;
+        if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+        return `${mb} MB`;
+      };
+
       const items = [
         ["Alive Nodes", stats.alive_nodes],
         ["CPU Usage", `${stats.cpu_usage.toFixed(1)}%`],
-        ["Memory Used", `${stats.mem_used_mb} MB`],
-        ["Memory Total", `${stats.mem_total_mb} MB`],
+        ["Memory Used", fmtMem(stats.mem_used_mb)],
+        ["Memory Total", fmtMem(stats.mem_total_mb)],
         ["Books (entries)", stats.books_entries],
         ["Books (partitions)", stats.books_partitions],
         ["Datalake (entries)", stats.datalake_entries],
