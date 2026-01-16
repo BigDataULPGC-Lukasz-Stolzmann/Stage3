@@ -541,15 +541,9 @@ async fn handle_stats(
     sys.refresh_cpu();
     sys.refresh_memory();
     let cpu_usage = sys.global_cpu_info().cpu_usage();
-    let total_mem = sys.total_memory();
-    let used_mem = sys.used_memory();
-    let (mem_total_mb, mem_used_mb) = if total_mem > 1_000_000_000 {
-        // Some platforms expose bytes; normalize to MB.
-        (total_mem / (1024 * 1024), used_mem / (1024 * 1024))
-    } else {
-        // sysinfo reports KiB on Linux; convert to MB.
-        (total_mem / 1024, used_mem / 1024)
-    };
+    // sysinfo returns bytes for memory values.
+    let mem_total_mb = sys.total_memory() / (1024 * 1024);
+    let mem_used_mb = sys.used_memory() / (1024 * 1024);
 
     Json(NodeStatsResponse {
         node_id: node.id.0.clone(),
