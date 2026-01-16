@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Search UI</title>
+  <title>Distributed Search UI</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg: #f6f7fb;
@@ -27,7 +28,7 @@
     }
 
     .wrap {
-      max-width: 1024px;
+      max-width: 1100px;
       margin: 0 auto;
       display: grid;
       gap: 20px;
@@ -39,15 +40,35 @@
       gap: 8px;
     }
 
-    h1 {
-      margin: 0;
-      font-size: clamp(22px, 3vw, 32px);
+    h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); }
+    .subtitle { color: var(--muted); font-size: 14px; }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 2px solid var(--border);
+      margin-bottom: 16px;
     }
 
-    .subtitle {
-      color: var(--muted);
+    .tab {
+      padding: 10px 20px;
+      border: none;
+      background: transparent;
       font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
     }
+
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
 
     .card {
       background: var(--card);
@@ -57,12 +78,13 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      margin-bottom: 16px;
     }
 
     .grid {
       display: grid;
       gap: 16px;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     }
 
     label {
@@ -72,12 +94,11 @@
       letter-spacing: 0.08em;
     }
 
-    input {
+    input, select {
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px 10px;
       font-size: 15px;
-      width: 100%;
     }
 
     button {
@@ -94,6 +115,11 @@
     button.secondary {
       background: var(--accent-soft);
       color: var(--accent);
+    }
+
+    button.danger {
+      background: var(--danger);
+      color: #fff;
     }
 
     .row {
@@ -119,12 +145,14 @@
       font-size: 12px;
       margin: 0;
       overflow-x: auto;
+      max-height: 200px;
+      overflow-y: auto;
     }
 
     .stats-grid {
       display: grid;
       gap: 8px;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     }
 
     .stat {
@@ -146,6 +174,45 @@
       margin: 6px 0 0;
       font-size: 16px;
     }
+
+    .chart-container {
+      position: relative;
+      height: 250px;
+      margin: 12px 0;
+    }
+
+    .bench-section {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      margin-top: 10px;
+    }
+
+    .metric {
+      text-align: center;
+      padding: 8px;
+      background: #f8f9fc;
+      border-radius: 6px;
+    }
+
+    .metric-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .metric-label {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
   </style>
 </head>
 <body>
@@ -155,50 +222,113 @@
       <div class="subtitle">Connected via nginx load balancer</div>
     </header>
 
-    <section class="card">
-      <label>Cluster Gateway (nginx)</label>
-      <div class="row">
-        <input id="nodeUrl" type="text" placeholder="http://localhost" />
-        <button class="secondary" onclick="saveNode()">Connect</button>
-      </div>
-      <div class="status" id="nodeStatus"></div>
-      <div id="nodesContainer" style="margin-top: 12px;"></div>
-    </section>
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab" onclick="switchTab('benchmarks')">Benchmarks & Tests</button>
+    </div>
 
-    <div class="grid">
+    <div id="tab-dashboard" class="tab-content active">
       <section class="card">
-        <label>Ingest Book</label>
+        <label>Cluster Gateway (nginx)</label>
         <div class="row">
-          <input id="bookId" type="number" min="1" placeholder="Gutenberg book id" />
-          <button onclick="ingest()">Ingest</button>
-          <button class="secondary" onclick="checkStatus()">Check Status</button>
+          <input id="nodeUrl" type="text" placeholder="http://localhost" style="flex:1" />
+          <button class="secondary" onclick="saveNode()">Connect</button>
         </div>
-        <div id="ingestStatus" class="status"></div>
-        <pre id="ingestOutput"></pre>
+        <div class="status" id="nodeStatus"></div>
+        <div id="nodesContainer" style="margin-top: 12px;"></div>
       </section>
 
+      <div class="grid">
+        <section class="card">
+          <label>Ingest Book</label>
+          <div class="row">
+            <input id="bookId" type="number" min="1" placeholder="Gutenberg book id" style="width:140px" />
+            <button onclick="ingest()">Ingest</button>
+            <button class="secondary" onclick="checkStatus()">Status</button>
+          </div>
+          <div id="ingestStatus" class="status"></div>
+          <pre id="ingestOutput"></pre>
+        </section>
+
+        <section class="card">
+          <label>Search</label>
+          <div class="row">
+            <input id="query" type="text" placeholder="Query term" style="flex:1" />
+            <input id="limit" type="number" min="1" max="50" value="5" style="width:60px" />
+            <button onclick="search()">Search</button>
+          </div>
+          <div id="searchStatus" class="status"></div>
+          <pre id="searchOutput"></pre>
+        </section>
+      </div>
+
       <section class="card">
-        <label>Search</label>
-        <div class="row">
-          <input id="query" type="text" placeholder="Query term" />
-          <input id="limit" type="number" min="1" max="50" value="5" />
-          <button onclick="search()">Search</button>
-        </div>
-        <div id="searchStatus" class="status"></div>
-        <pre id="searchOutput"></pre>
+        <label>Cluster Stats</label>
+        <div class="stats-grid" id="statsGrid"></div>
+        <div class="status" id="statsStatus"></div>
       </section>
     </div>
 
-    <section class="card">
-      <label>Node Stats</label>
-      <div class="stats-grid" id="statsGrid"></div>
-      <div class="status" id="statsStatus"></div>
-    </section>
+    <div id="tab-benchmarks" class="tab-content">
+      <div class="grid">
+        <section class="card">
+          <label>Ingest Benchmark</label>
+          <div class="row">
+            <input id="benchIngestStart" type="number" min="1" value="1" style="width:70px" />
+            <span style="color: var(--muted);">to</span>
+            <input id="benchIngestEnd" type="number" min="1" value="50" style="width:70px" />
+            <button onclick="runIngestBenchmark()">Run</button>
+            <button class="secondary" onclick="stopBenchmark()">Stop</button>
+          </div>
+          <div id="ingestBenchStatus" class="status"></div>
+          <div class="metrics-grid" id="ingestMetrics"></div>
+          <div class="chart-container"><canvas id="ingestChart"></canvas></div>
+          <pre id="ingestBenchOutput" style="max-height:120px"></pre>
+        </section>
 
-    <section class="card">
-      <label>Test Queries</label>
-      <div class="subtitle">Try: elizabeth, darcy, pride, adventure, voyage</div>
-    </section>
+        <section class="card">
+          <label>Search Benchmark</label>
+          <div class="row">
+            <input id="benchSearchQueries" type="text" value="love,death,war,king,queen,money,time,world" style="flex:1" />
+          </div>
+          <div class="row" style="margin-top:8px">
+            <span style="color:var(--muted);font-size:12px">Iterations:</span>
+            <input id="benchSearchIterations" type="number" min="1" value="10" style="width:60px" />
+            <button onclick="runSearchBenchmark()">Run</button>
+          </div>
+          <div id="searchBenchStatus" class="status"></div>
+          <div class="metrics-grid" id="searchMetrics"></div>
+          <div class="chart-container"><canvas id="searchChart"></canvas></div>
+          <pre id="searchBenchOutput" style="max-height:120px"></pre>
+        </section>
+      </div>
+
+      <section class="card">
+        <label>Load Distribution Test</label>
+        <div class="row">
+          <span style="color:var(--muted);font-size:12px">Requests:</span>
+          <input id="loadTestCount" type="number" min="10" value="100" style="width:80px" />
+          <button onclick="runLoadDistributionTest()">Run Test</button>
+        </div>
+        <div id="loadTestStatus" class="status"></div>
+        <div class="grid" style="margin-top:12px">
+          <div>
+            <div class="stats-grid" id="loadTestResults"></div>
+          </div>
+          <div class="chart-container"><canvas id="loadDistChart"></canvas></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <label>Results Summary</label>
+        <div class="row">
+          <button class="secondary" onclick="exportResults()">Export JSON</button>
+          <button class="secondary" onclick="exportCharts()">Export Charts (PNG)</button>
+          <button class="secondary" onclick="clearResults()">Clear All</button>
+        </div>
+        <pre id="benchmarkSummary" style="margin-top:12px"></pre>
+      </section>
+    </div>
   </div>
 
   <script>
@@ -210,20 +340,29 @@
     const statsStatus = document.getElementById("statsStatus");
     const nodeStatus = document.getElementById("nodeStatus");
     const nodeInput = document.getElementById("nodeUrl");
-
     const nodesContainer = document.getElementById("nodesContainer");
+
     const defaultNode = localStorage.getItem("nodeUrl") || "http://localhost";
     nodeInput.value = defaultNode;
 
-    function currentNode() {
-      return nodeInput.value.trim();
+    let ingestChart, searchChart, loadDistChart;
+    let benchmarkRunning = false;
+    let benchmarkResults = { ingest: null, search: null, loadDist: null };
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+      document.getElementById(`tab-${tab}`).classList.add('active');
     }
+
+    function currentNode() { return nodeInput.value.trim(); }
 
     function saveNode() {
       const node = currentNode();
       if (!node) return setStatus(nodeStatus, "Enter node URL", true);
       localStorage.setItem("nodeUrl", node);
-      setStatus(nodeStatus, "Node saved.");
+      setStatus(nodeStatus, "Connected.");
       pollStats();
     }
 
@@ -235,7 +374,7 @@
       try {
         const res = await fetch(`/api/ingest?id=${encodeURIComponent(id)}&node=${encodeURIComponent(currentNode())}`, { method: "POST" });
         const data = await res.json();
-        setStatus(ingestStatus, res.ok ? "Ingested." : "Ingest failed.", !res.ok);
+        setStatus(ingestStatus, res.ok ? "Ingested." : "Failed.", !res.ok);
         ingestOutput.textContent = JSON.stringify(data, null, 2);
       } catch (err) {
         setStatus(ingestStatus, "Request failed", true);
@@ -245,14 +384,14 @@
     async function checkStatus() {
       const id = document.getElementById("bookId").value.trim();
       if (!id) return setStatus(ingestStatus, "Provide an id", true);
-      setStatus(ingestStatus, "Checking status...");
+      setStatus(ingestStatus, "Checking...");
       try {
         const res = await fetch(`/api/status?id=${encodeURIComponent(id)}&node=${encodeURIComponent(currentNode())}`);
         const data = await res.json();
         setStatus(ingestStatus, `Status: ${data.body?.status || "unknown"}`);
         ingestOutput.textContent = JSON.stringify(data, null, 2);
       } catch (err) {
-        setStatus(ingestStatus, "Status check failed", true);
+        setStatus(ingestStatus, "Failed", true);
       }
     }
 
@@ -268,7 +407,7 @@
         setStatus(searchStatus, "Done.");
         searchOutput.textContent = JSON.stringify(data, null, 2);
       } catch (err) {
-        setStatus(searchStatus, "Search failed", true);
+        setStatus(searchStatus, "Failed", true);
       }
     }
 
@@ -281,49 +420,33 @@
     function renderStats(stats) {
       const fmtMem = (mb) => {
         if (typeof mb !== "number") return mb;
-        if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-        return `${mb} MB`;
+        return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
       };
 
-      // Render nodes list
       if (stats.nodes && stats.nodes.length > 0) {
         nodesContainer.innerHTML = `
-          <label style="margin-bottom: 6px; display: block;">Cluster Nodes (${stats.nodes.length})</label>
+          <label style="margin-bottom:6px;display:block;">Cluster Nodes (${stats.nodes.length})</label>
           <div class="stats-grid">
-            ${stats.nodes.map(n => `
-              <div class="stat">
-                <h3>Node</h3>
-                <p style="font-size: 13px; word-break: break-all;">${n.http_addr}</p>
-              </div>
-            `).join("")}
-          </div>
-        `;
+            ${stats.nodes.map(n => `<div class="stat"><h3>Node</h3><p style="font-size:13px;word-break:break-all;">${n.http_addr}</p></div>`).join("")}
+          </div>`;
       }
 
       const items = [
         ["Alive Nodes", stats.alive_nodes],
-        ["CPU Usage", `${stats.cpu_usage.toFixed(1)}%`],
-        ["Memory Used", fmtMem(stats.mem_used_mb)],
-        ["Memory Total", fmtMem(stats.mem_total_mb)],
-        ["Books (entries)", stats.books_entries],
-        ["Books (partitions)", stats.books_partitions],
-        ["Datalake (entries)", stats.datalake_entries],
-        ["Datalake (partitions)", stats.datalake_partitions],
-        ["Index (entries)", stats.index_entries],
-        ["Index (partitions)", stats.index_partitions],
-        ["Queue (tasks)", stats.queue_tasks],
-        ["Queue pending", stats.queue_pending],
-        ["Queue running", stats.queue_running],
-        ["Queue completed", stats.queue_completed],
-        ["Queue failed", stats.queue_failed],
+        ["CPU", `${stats.cpu_usage.toFixed(1)}%`],
+        ["Mem Used", fmtMem(stats.mem_used_mb)],
+        ["Mem Total", fmtMem(stats.mem_total_mb)],
+        ["Books", stats.books_entries],
+        ["Datalake", stats.datalake_entries],
+        ["Index", stats.index_entries],
+        ["Queue", stats.queue_tasks],
+        ["Pending", stats.queue_pending],
+        ["Running", stats.queue_running],
+        ["Completed", stats.queue_completed],
+        ["Failed", stats.queue_failed],
       ];
 
-      statsGrid.innerHTML = items
-        .map(
-          ([label, value]) =>
-            `<div class="stat"><h3>${label}</h3><p>${value}</p></div>`
-        )
-        .join("");
+      statsGrid.innerHTML = items.map(([l, v]) => `<div class="stat"><h3>${l}</h3><p>${v}</p></div>`).join("");
     }
 
     async function pollStats() {
@@ -332,7 +455,7 @@
         const data = await res.json();
         if (data.body) {
           renderStats(data.body);
-          statsStatus.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+          statsStatus.textContent = `Updated: ${new Date().toLocaleTimeString()}`;
         }
       } catch (err) {
         statsStatus.textContent = "Failed to fetch stats.";
@@ -341,6 +464,335 @@
 
     pollStats();
     setInterval(pollStats, 4000);
+
+    function calcStats(times) {
+      if (!times.length) return {};
+      const sorted = [...times].sort((a, b) => a - b);
+      const sum = sorted.reduce((a, b) => a + b, 0);
+      const avg = sum / sorted.length;
+      const variance = sorted.reduce((acc, t) => acc + Math.pow(t - avg, 2), 0) / sorted.length;
+      return {
+        min: sorted[0],
+        max: sorted[sorted.length - 1],
+        avg,
+        stdDev: Math.sqrt(variance),
+        p50: sorted[Math.floor(sorted.length * 0.5)],
+        p90: sorted[Math.floor(sorted.length * 0.9)],
+        p95: sorted[Math.floor(sorted.length * 0.95)],
+        p99: sorted[Math.floor(sorted.length * 0.99)] || sorted[sorted.length - 1],
+        count: sorted.length
+      };
+    }
+
+    function renderMetrics(containerId, stats, extra = {}) {
+      const items = [
+        ["Count", stats.count],
+        ["Min", `${stats.min?.toFixed(0)}ms`],
+        ["Avg", `${stats.avg?.toFixed(0)}ms`],
+        ["Max", `${stats.max?.toFixed(0)}ms`],
+        ["StdDev", `${stats.stdDev?.toFixed(0)}ms`],
+        ["P50", `${stats.p50?.toFixed(0)}ms`],
+        ["P90", `${stats.p90?.toFixed(0)}ms`],
+        ["P95", `${stats.p95?.toFixed(0)}ms`],
+        ["P99", `${stats.p99?.toFixed(0)}ms`],
+        ...Object.entries(extra)
+      ];
+      document.getElementById(containerId).innerHTML = items
+        .map(([l, v]) => `<div class="metric"><div class="metric-value">${v}</div><div class="metric-label">${l}</div></div>`)
+        .join("");
+    }
+
+    async function runIngestBenchmark() {
+      if (benchmarkRunning) return;
+      benchmarkRunning = true;
+
+      const start = parseInt(document.getElementById("benchIngestStart").value) || 1;
+      const end = parseInt(document.getElementById("benchIngestEnd").value) || 50;
+      const statusEl = document.getElementById("ingestBenchStatus");
+      const outputEl = document.getElementById("ingestBenchOutput");
+
+      const results = { success: 0, failed: 0, alreadyExists: 0, times: [], startTime: Date.now() };
+      outputEl.textContent = "";
+
+      for (let id = start; id <= end && benchmarkRunning; id++) {
+        statusEl.textContent = `Ingesting ${id}/${end}...`;
+        const t0 = performance.now();
+        try {
+          const res = await fetch(`/api/ingest?id=${id}&node=${encodeURIComponent(currentNode())}`, { method: "POST" });
+          const data = await res.json();
+          const elapsed = performance.now() - t0;
+          results.times.push(elapsed);
+
+          if (data.body?.status === "already_exists") {
+            results.alreadyExists++;
+            outputEl.textContent += `#${id}: exists (${elapsed.toFixed(0)}ms)\n`;
+          } else if (res.ok) {
+            results.success++;
+            outputEl.textContent += `#${id}: ok (${elapsed.toFixed(0)}ms)\n`;
+          } else {
+            results.failed++;
+            outputEl.textContent += `#${id}: failed\n`;
+          }
+        } catch (e) {
+          results.failed++;
+          outputEl.textContent += `#${id}: error\n`;
+        }
+        outputEl.scrollTop = outputEl.scrollHeight;
+        updateIngestChart(results.times);
+      }
+
+      results.totalTime = Date.now() - results.startTime;
+      results.stats = calcStats(results.times);
+      results.throughput = results.times.length / (results.totalTime / 1000);
+
+      benchmarkResults.ingest = results;
+      renderMetrics("ingestMetrics", results.stats, { "Throughput": `${results.throughput.toFixed(2)}/s` });
+      statusEl.textContent = `Done: ${results.success} ok, ${results.alreadyExists} exist, ${results.failed} failed`;
+      updateSummary();
+      benchmarkRunning = false;
+    }
+
+    async function runSearchBenchmark() {
+      if (benchmarkRunning) return;
+      benchmarkRunning = true;
+
+      const queries = document.getElementById("benchSearchQueries").value.split(",").map(s => s.trim()).filter(Boolean);
+      const iterations = parseInt(document.getElementById("benchSearchIterations").value) || 10;
+      const statusEl = document.getElementById("searchBenchStatus");
+      const outputEl = document.getElementById("searchBenchOutput");
+
+      const results = { times: [], totalResults: 0, startTime: Date.now(), perQuery: {} };
+      outputEl.textContent = "";
+
+      for (let i = 0; i < iterations && benchmarkRunning; i++) {
+        for (const q of queries) {
+          if (!benchmarkRunning) break;
+          statusEl.textContent = `Iteration ${i + 1}/${iterations}: "${q}"...`;
+
+          const t0 = performance.now();
+          try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=10&node=${encodeURIComponent(currentNode())}`);
+            const data = await res.json();
+            const elapsed = performance.now() - t0;
+            results.times.push(elapsed);
+            results.totalResults += data.body?.results?.length || 0;
+            if (!results.perQuery[q]) results.perQuery[q] = [];
+            results.perQuery[q].push(elapsed);
+            outputEl.textContent += `"${q}": ${elapsed.toFixed(0)}ms (${data.body?.results?.length || 0} hits)\n`;
+          } catch (e) {
+            outputEl.textContent += `"${q}": error\n`;
+          }
+          outputEl.scrollTop = outputEl.scrollHeight;
+          updateSearchChart(results.times);
+        }
+      }
+
+      results.totalTime = Date.now() - results.startTime;
+      results.stats = calcStats(results.times);
+      results.throughput = results.times.length / (results.totalTime / 1000);
+
+      benchmarkResults.search = results;
+      renderMetrics("searchMetrics", results.stats, { "Throughput": `${results.throughput.toFixed(2)}/s`, "Total Hits": results.totalResults });
+      statusEl.textContent = `Done: ${results.times.length} queries in ${(results.totalTime / 1000).toFixed(1)}s`;
+      updateSummary();
+      benchmarkRunning = false;
+    }
+
+    async function runLoadDistributionTest() {
+      if (benchmarkRunning) return;
+      benchmarkRunning = true;
+
+      const count = parseInt(document.getElementById("loadTestCount").value) || 100;
+      const statusEl = document.getElementById("loadTestStatus");
+      const resultsEl = document.getElementById("loadTestResults");
+
+      const nodeHits = {};
+      const times = [];
+      statusEl.textContent = "Running...";
+      resultsEl.innerHTML = "";
+
+      const batchSize = 10;
+      let completed = 0;
+
+      for (let i = 0; i < count && benchmarkRunning; i += batchSize) {
+        const batch = [];
+        for (let j = 0; j < batchSize && (i + j) < count; j++) {
+          const t0 = performance.now();
+          batch.push(
+            fetch(`/api/stats?node=${encodeURIComponent(currentNode())}`)
+              .then(res => res.json())
+              .then(data => {
+                times.push(performance.now() - t0);
+                const httpAddr = data.body?.http_addr || "unknown";
+                nodeHits[httpAddr] = (nodeHits[httpAddr] || 0) + 1;
+              })
+              .catch(() => { nodeHits["error"] = (nodeHits["error"] || 0) + 1; })
+          );
+        }
+        await Promise.all(batch);
+        completed += batch.length;
+        statusEl.textContent = `Request ${completed}/${count}...`;
+      }
+
+      benchmarkResults.loadDist = { count, distribution: nodeHits, times, stats: calcStats(times) };
+
+      resultsEl.innerHTML = Object.entries(nodeHits)
+        .map(([node, hits]) => {
+          const pct = ((hits / count) * 100).toFixed(1);
+          return `<div class="stat"><h3>${node.split(':')[0].split('.').slice(-1)[0]}</h3><p>${hits} (${pct}%)</p></div>`;
+        }).join("");
+
+      updateLoadDistChart(nodeHits);
+      statusEl.textContent = `Done: ${count} requests across ${Object.keys(nodeHits).length} nodes | Avg: ${benchmarkResults.loadDist.stats.avg?.toFixed(0)}ms`;
+      updateSummary();
+      benchmarkRunning = false;
+    }
+
+    function updateIngestChart(times) {
+      const ctx = document.getElementById("ingestChart").getContext("2d");
+      if (ingestChart) ingestChart.destroy();
+      ingestChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: times.map((_, i) => i + 1),
+          datasets: [{
+            label: "Latency (ms)",
+            data: times,
+            borderColor: "#2b7bff",
+            backgroundColor: "rgba(43,123,255,0.1)",
+            fill: true,
+            tension: 0.3
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+      });
+    }
+
+    function updateSearchChart(times) {
+      const ctx = document.getElementById("searchChart").getContext("2d");
+      if (searchChart) searchChart.destroy();
+
+      const buckets = [0, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 1000];
+      const histogram = buckets.map(() => 0);
+      times.forEach(t => {
+        for (let i = buckets.length - 1; i >= 0; i--) {
+          if (t >= buckets[i]) { histogram[i]++; break; }
+        }
+      });
+
+      searchChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: buckets.map((b, i) => i === buckets.length - 1 ? `${b}+` : `${b}-${buckets[i + 1]}`),
+          datasets: [{
+            label: "Requests",
+            data: histogram,
+            backgroundColor: "#2b7bff"
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, title: { display: true, text: "Latency Distribution (ms)" } }
+        }
+      });
+    }
+
+    function updateLoadDistChart(nodeHits) {
+      const ctx = document.getElementById("loadDistChart").getContext("2d");
+      if (loadDistChart) loadDistChart.destroy();
+
+      const labels = Object.keys(nodeHits).map(n => n.split(':')[0].split('.').slice(-2).join('.'));
+      const data = Object.values(nodeHits);
+      const colors = ["#2b7bff", "#2f8f5b", "#d64545", "#f5a623", "#9b59b6", "#1abc9c"];
+
+      loadDistChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels,
+          datasets: [{ data, backgroundColor: colors.slice(0, labels.length) }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { title: { display: true, text: "Request Distribution" } }
+        }
+      });
+    }
+
+    function stopBenchmark() { benchmarkRunning = false; }
+
+    function updateSummary() {
+      const el = document.getElementById("benchmarkSummary");
+      const summary = {
+        timestamp: new Date().toISOString(),
+        cluster: currentNode(),
+        ingest: benchmarkResults.ingest ? {
+          success: benchmarkResults.ingest.success,
+          failed: benchmarkResults.ingest.failed,
+          exists: benchmarkResults.ingest.alreadyExists,
+          ...benchmarkResults.ingest.stats,
+          throughputRps: benchmarkResults.ingest.throughput?.toFixed(2)
+        } : null,
+        search: benchmarkResults.search ? {
+          totalQueries: benchmarkResults.search.stats.count,
+          totalHits: benchmarkResults.search.totalResults,
+          ...benchmarkResults.search.stats,
+          throughputRps: benchmarkResults.search.throughput?.toFixed(2)
+        } : null,
+        loadDistribution: benchmarkResults.loadDist ? {
+          totalRequests: benchmarkResults.loadDist.count,
+          distribution: benchmarkResults.loadDist.distribution,
+          ...benchmarkResults.loadDist.stats
+        } : null
+      };
+      el.textContent = JSON.stringify(summary, null, 2);
+    }
+
+    function exportResults() {
+      const data = JSON.stringify(benchmarkResults, null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `benchmark-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function exportCharts() {
+      const charts = [
+        { chart: ingestChart, name: "ingest-latency" },
+        { chart: searchChart, name: "search-histogram" },
+        { chart: loadDistChart, name: "load-distribution" }
+      ];
+
+      for (const { chart, name } of charts) {
+        if (chart) {
+          const url = chart.toBase64Image();
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `${name}-${Date.now()}.png`;
+          a.click();
+        }
+      }
+    }
+
+    function clearResults() {
+      benchmarkResults = { ingest: null, search: null, loadDist: null };
+      document.getElementById("benchmarkSummary").textContent = "";
+      document.getElementById("ingestBenchOutput").textContent = "";
+      document.getElementById("searchBenchOutput").textContent = "";
+      document.getElementById("loadTestResults").innerHTML = "";
+      document.getElementById("ingestBenchStatus").textContent = "";
+      document.getElementById("searchBenchStatus").textContent = "";
+      document.getElementById("loadTestStatus").textContent = "";
+      document.getElementById("ingestMetrics").innerHTML = "";
+      document.getElementById("searchMetrics").innerHTML = "";
+      if (ingestChart) { ingestChart.destroy(); ingestChart = null; }
+      if (searchChart) { searchChart.destroy(); searchChart = null; }
+      if (loadDistChart) { loadDistChart.destroy(); loadDistChart = null; }
+    }
   </script>
 </body>
 </html>

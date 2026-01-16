@@ -154,7 +154,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let executor = TaskExecutor::new(queue.clone(), task_registry, 4);
+    let worker_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    tracing::info!("Starting {} task workers (auto-detected CPU cores)", worker_count);
+    let executor = TaskExecutor::new(queue.clone(), task_registry, worker_count);
 
     executor.start().await;
 
