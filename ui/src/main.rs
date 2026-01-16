@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let node_url =
-        std::env::var("NODE_URL").unwrap_or_else(|_| "http://127.0.0.1:6000".to_string());
+        std::env::var("NODE_URL").unwrap_or_else(|_| "http://localhost".to_string());
     let bind_addr: SocketAddr = std::env::var("UI_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
         .parse()?;

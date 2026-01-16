@@ -470,12 +470,20 @@ struct RoutesResponse {
     routes: Vec<&'static str>,
 }
 
+#[derive(Serialize, Clone)]
+struct NodeInfo {
+    node_id: String,
+    gossip_addr: String,
+    http_addr: String,
+}
+
 #[derive(Serialize)]
 struct NodeStatsResponse {
     node_id: String,
     gossip_addr: String,
     http_addr: String,
     alive_nodes: usize,
+    nodes: Vec<NodeInfo>,
     books_partitions: usize,
     books_entries: usize,
     datalake_partitions: usize,
@@ -534,7 +542,15 @@ async fn handle_stats(
     Extension(queue): Extension<Arc<DistributedQueue>>,
     Extension(membership): Extension<Arc<MembershipService>>,
 ) -> Json<NodeStatsResponse> {
-    let alive_nodes = membership.get_alive_members();
+    let alive_members = membership.get_alive_members();
+    let nodes: Vec<NodeInfo> = alive_members
+        .iter()
+        .map(|n| NodeInfo {
+            node_id: n.id.0.clone(),
+            gossip_addr: n.gossip_addr.to_string(),
+            http_addr: n.http_addr.to_string(),
+        })
+        .collect();
     let (pending, running, completed, failed) = queue.local_task_status_counts();
     let node = &membership.local_node;
     let mut sys = System::new_all();
@@ -549,7 +565,8 @@ async fn handle_stats(
         node_id: node.id.0.clone(),
         gossip_addr: node.gossip_addr.to_string(),
         http_addr: node.http_addr.to_string(),
-        alive_nodes: alive_nodes.len(),
+        alive_nodes: nodes.len(),
+        nodes,
         books_partitions: books.local_partition_count(),
         books_entries: books.local_entry_count(),
         datalake_partitions: datalake.local_partition_count(),
