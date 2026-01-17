@@ -224,6 +224,7 @@
 
     <div class="tabs">
       <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab" onclick="switchTab('cluster')">Cluster Stats</button>
       <button class="tab" onclick="switchTab('benchmarks')">Benchmarks & Tests</button>
     </div>
 
@@ -235,7 +236,6 @@
           <button class="secondary" onclick="saveNode()">Connect</button>
         </div>
         <div class="status" id="nodeStatus"></div>
-        <div id="nodesContainer" style="margin-top: 12px;"></div>
       </section>
 
       <div class="grid">
@@ -262,11 +262,11 @@
         </section>
       </div>
 
-      <section class="card">
-        <label>Cluster Stats</label>
-        <div class="stats-grid" id="statsGrid"></div>
-        <div class="status" id="statsStatus"></div>
-      </section>
+    </div>
+
+    <div id="tab-cluster" class="tab-content">
+      <div id="nodesContainer"></div>
+      <div class="status" id="statsStatus" style="margin-top:12px;text-align:center;"></div>
     </div>
 
     <div id="tab-benchmarks" class="tab-content">
@@ -336,7 +336,6 @@
     const ingestOutput = document.getElementById("ingestOutput");
     const searchStatus = document.getElementById("searchStatus");
     const searchOutput = document.getElementById("searchOutput");
-    const statsGrid = document.getElementById("statsGrid");
     const statsStatus = document.getElementById("statsStatus");
     const nodeStatus = document.getElementById("nodeStatus");
     const nodeInput = document.getElementById("nodeUrl");
@@ -418,35 +417,9 @@
     }
 
     function renderStats(stats) {
-      const fmtMem = (mb) => {
-        if (typeof mb !== "number") return mb;
-        return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
-      };
-
       if (stats.nodes && stats.nodes.length > 0) {
-        nodesContainer.innerHTML = `
-          <label style="margin-bottom:6px;display:block;">Cluster Nodes (${stats.nodes.length})</label>
-          <div class="stats-grid">
-            ${stats.nodes.map(n => `<div class="stat"><h3>Node</h3><p style="font-size:13px;word-break:break-all;">${n.http_addr}</p></div>`).join("")}
-          </div>`;
+        fetchAllNodeStats(stats.nodes);
       }
-
-      const items = [
-        ["Alive Nodes", stats.alive_nodes],
-        ["CPU", `${stats.cpu_usage.toFixed(1)}%`],
-        ["Mem Used", fmtMem(stats.mem_used_mb)],
-        ["Mem Total", fmtMem(stats.mem_total_mb)],
-        ["Books", stats.books_entries],
-        ["Datalake", stats.datalake_entries],
-        ["Index", stats.index_entries],
-        ["Queue", stats.queue_tasks],
-        ["Pending", stats.queue_pending],
-        ["Running", stats.queue_running],
-        ["Completed", stats.queue_completed],
-        ["Failed", stats.queue_failed],
-      ];
-
-      statsGrid.innerHTML = items.map(([l, v]) => `<div class="stat"><h3>${l}</h3><p>${v}</p></div>`).join("");
     }
 
     async function pollStats() {
@@ -464,6 +437,52 @@
 
     pollStats();
     setInterval(pollStats, 4000);
+
+    async function fetchAllNodeStats(nodes) {
+      const results = await Promise.all(
+        nodes.map(async (n) => {
+          try {
+            const res = await fetch(`/api/stats?node=http://${n.http_addr}`);
+            const data = await res.json();
+            return { addr: n.http_addr, stats: data.body };
+          } catch (e) {
+            return { addr: n.http_addr, stats: null };
+          }
+        })
+      );
+
+      const fmtMem = (mb) => {
+        if (typeof mb !== "number") return "-";
+        return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+      };
+
+      nodesContainer.innerHTML = `
+        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));">
+          ${results.map(r => {
+            if (!r.stats) {
+              return `<div class="card" style="padding:10px;border-color:var(--danger);">
+                <span style="color:var(--danger);font-weight:600;">${r.addr} - OFFLINE</span>
+              </div>`;
+            }
+            const s = r.stats;
+            return `<div class="card" style="padding:12px;gap:8px;">
+              <div style="font-weight:600;font-size:13px;color:var(--accent);">${r.addr}</div>
+              <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:11px;">
+                <div><span style="color:var(--muted);">CPU</span><br><b>${s.cpu_usage?.toFixed(0)}%</b></div>
+                <div><span style="color:var(--muted);">Mem</span><br><b>${fmtMem(s.mem_used_mb)}</b></div>
+                <div><span style="color:var(--muted);">Books</span><br><b>${s.books_entries}</b></div>
+                <div><span style="color:var(--muted);">Lake</span><br><b>${s.datalake_entries}</b></div>
+                <div><span style="color:var(--muted);">Index</span><br><b>${s.index_entries}</b></div>
+                <div><span style="color:var(--muted);">Queue</span><br><b>${s.queue_tasks}</b></div>
+                <div><span style="color:var(--muted);">Pend</span><br><b>${s.queue_pending}</b></div>
+                <div><span style="color:var(--muted);">Run</span><br><b>${s.queue_running}</b></div>
+                <div><span style="color:var(--muted);">Done</span><br><b>${s.queue_completed}</b></div>
+                <div><span style="color:var(--muted);">Fail</span><br><b style="color:${s.queue_failed > 0 ? 'var(--danger)' : 'inherit'}">${s.queue_failed}</b></div>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>`;
+    }
 
     function calcStats(times) {
       if (!times.length) return {};
