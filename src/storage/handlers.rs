@@ -1,3 +1,8 @@
+//! Storage API Handlers
+//!
+//! HTTP endpoints that expose the `DistributedMap` capabilities to the network.
+//! These handlers translate HTTP requests into internal storage calls.
+
 use axum::{
     Json,
     extract::{Extension, Path},
@@ -141,6 +146,10 @@ where
     }
 }
 
+/// Internal Endpoint: Handles writes forwarded from other nodes.
+///
+/// When Node A receives a PUT for a key owned by Node B, A forwards it here.
+/// Node B then treats this as a primary write (store + replicate).
 pub async fn handle_forward_put<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Json(req): Json<ForwardPutRequest>,
@@ -187,7 +196,10 @@ where
     }
 }
 
-// Generic handlers - używane przez concrete wrappers w main.rs
+/// Internal Endpoint: Handles incoming replication data.
+///
+/// Invoked by a Primary node to force a Backup node to store a copy of the data.
+/// The operation is idempotent based on `op_id`.
 pub async fn handle_replicate<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Json(req): Json<ReplicateRequest>,

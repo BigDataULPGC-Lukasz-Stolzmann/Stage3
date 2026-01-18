@@ -1,3 +1,14 @@
+//! Frontend Dashboard Server
+//!
+//! A lightweight Axum-based web server that serves the Single Page Application (UI)
+//! and acts as a CORS proxy/gateway for the distributed cluster.
+//!
+//! ## Responsibilities
+//! - **Static Assets**: Serves the embedded `ui.html` dashboard.
+//! - **API Proxy**: Forwards frontend requests (Ingest, Search, Stats) to the
+//!   actual cluster nodes, handling CORS and URL normalization.
+//! - **Configuration**: Connects to a default cluster node defined by `NODE_URL`.
+
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::Html;
@@ -35,6 +46,13 @@ struct ProxyResponse {
     body: serde_json::Value,
 }
 
+/// Entry Point
+///
+/// Configures the logging system and starts the HTTP server.
+///
+/// ## Environment Variables
+/// - `NODE_URL`: Default cluster node to connect to (default: `http://localhost`).
+/// - `UI_BIND`: Address to bind the UI server to (default: `127.0.0.1:8080`).
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -66,10 +84,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Serves the main Dashboard HTML.
+///
+/// The HTML content is compiled into the binary using `include_str!`,
+/// making the executable self-contained (no external static files required).
 async fn ui() -> Html<&'static str> {
     Html(include_str!("ui.html"))
 }
 
+/// Ingestion Proxy Endpoint.
+///
+/// Forwards `POST /api/ingest` requests from the browser to the target cluster node's `/ingest/{id}` endpoint.
+/// Allows the frontend to specify a target node via the `node` query parameter, or falls back to the default.
 async fn api_ingest(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<IngestParams>,
@@ -92,6 +118,10 @@ async fn api_ingest(
     Ok(Json(ProxyResponse { status, body }))
 }
 
+/// Search Proxy Endpoint.
+///
+/// Forwards `GET /api/search` requests to the target cluster node.
+/// Handles query parameter encoding (`q`, `limit`) to ensure valid URL formation.
 async fn api_search(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<SearchParams>,
@@ -144,6 +174,10 @@ async fn api_status(
     Ok(Json(ProxyResponse { status, body }))
 }
 
+/// Cluster Stats Proxy.
+///
+/// Fetches the internal health metrics (`/health/stats`) from a specific node.
+/// This allows the UI to visualize the state of the entire cluster by querying nodes individually.
 async fn api_stats(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<NodeParams>,
@@ -166,6 +200,12 @@ async fn api_stats(
     Ok(Json(ProxyResponse { status, body }))
 }
 
+/// Helper: Node URL Normalization.
+///
+/// Determines the target URL for a request.
+/// 1. Checks if the client requested a specific node (`override_url`).
+/// 2. If not, uses the server's default `NODE_URL`.
+/// 3. Ensures the URL has the correct protocol (`http://`) and no trailing slashes.
 fn resolve_node_url(state: &AppState, override_url: Option<String>) -> String {
     let candidate = override_url.unwrap_or_else(|| state.node_url.clone());
     let trimmed = candidate.trim();

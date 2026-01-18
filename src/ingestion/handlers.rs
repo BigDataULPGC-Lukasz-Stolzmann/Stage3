@@ -1,3 +1,8 @@
+//! Ingestion API Handlers
+//!
+//! Axum route handlers that expose the ingestion service functionality via HTTP.
+//! These endpoints are responsible for the initial processing of external content.
+
 use super::types::{IndexTaskPayload, IngestResponse, IngestStatusResponse, RawDocument};
 use crate::executor::queue::DistributedQueue;
 use crate::executor::types::Task;
@@ -9,9 +14,19 @@ use axum::{Extension, Json};
 use regex::Regex;
 use std::sync::Arc;
 
+// Markers used to strip license boilerplates and identify the actual book content.
 const START_MARKER: &str = "*** START OF THE PROJECT GUTENBERG EBOOK";
 const END_MARKER: &str = "*** END OF THE PROJECT GUTENBERG EBOOK";
 
+
+/// Primary Ingestion Endpoint.
+///
+/// Orchestrates the entire lifecycle of a new document:
+/// 1. **Checks Datalake**: Returns immediately if the book already exists.
+/// 2. **Fetches**: Downloads the text file from the Project Gutenberg cache.
+/// 3. **Parses**: Splits the text into header/body and extracts metadata (title, author, year).
+/// 4. **Persists**: Stores the `RawDocument` in the distributed Datalake and metadata in the book registry.
+/// 5. **Schedules**: Submits an asynchronous task to the `Executor` queue to index the content.
 pub async fn handle_ingest_gutenberg(
     Path(book_id): Path<String>,
     Extension(datalake): Extension<Arc<DistributedMap<String, RawDocument>>>,
@@ -112,6 +127,10 @@ pub async fn handle_ingest_gutenberg(
     )
 }
 
+/// Status Check Endpoint.
+///
+/// Performs a lightweight check against the Datalake to verify if a specific
+/// `book_id` has been successfully downloaded and stored.
 pub async fn handle_ingest_status(
     Path(book_id): Path<String>,
     Extension(datalake): Extension<Arc<DistributedMap<String, RawDocument>>>,
@@ -136,6 +155,10 @@ async fn fetch_gutenberg_text(url: &str) -> Result<String, reqwest::Error> {
     response.text().await
 }
 
+/// heuristic parser to separate Gutenberg headers from the actual book content.
+///
+/// Uses specific start/end markers to strip out legal boilerplate and metadata
+/// that shouldn't be part of the full-text search body.
 fn split_gutenberg_text(text: &str) -> Option<(String, String)> {
     let start_idx = text.find(START_MARKER)?;
     let end_idx = text.find(END_MARKER)?;
@@ -196,6 +219,11 @@ fn extract_year(field: &Option<String>) -> Option<u32> {
     year
 }
 
+/// Calculates basic statistics for the document.
+///
+/// Returns a tuple containing:
+/// - Total word count.
+/// - Count of unique case-insensitive terms.
 fn compute_counts(body: &str) -> (usize, usize) {
     let re = Regex::new(r"\b[a-zA-Z]+\b").unwrap();
     let mut total = 0usize;

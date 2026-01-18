@@ -1,9 +1,23 @@
 #!/bin/bash
 
+# ==============================================================================
 # Cluster Integration Test Suite
-# Wymaga 2 node'ow:
-#   cargo run -- --bind 127.0.0.1:5000
-#   cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000
+# ==============================================================================
+#
+# A comprehensive integration test script that validates the core functionality
+# of the distributed system across multiple nodes.
+#
+# ## Prerequisites
+# - Two nodes must be running locally.
+# - Node 1 (Seed): 127.0.0.1:5000 (HTTP 6000)
+# - Node 2 (Peer): 127.0.0.1:5001 (HTTP 6001)
+#
+# ## Test Scope
+# 1. **Storage Layer**: PUT/GET operations, cross-node data retrieval, overwrites.
+# 2. **Executor Layer**: Task submission, lifecycle state changes, concurrent bursts.
+# 3. **Integration**: Mixed concurrent load (storage + computation) to test stability.
+#
+# ==============================================================================
 
 NODE1="http://127.0.0.1:6000"
 NODE2="http://127.0.0.1:6001"
@@ -32,25 +46,27 @@ section() {
     echo ""
 }
 
-# Sprawdz czy node'y zyja
+# Verifies that both cluster nodes are reachable via HTTP before starting tests.
+# If a node is down, the script aborts immediately to prevent false negatives.
 check_nodes() {
-    echo "Sprawdzam dostepnosc node'ow..."
+    echo "Checking node availability..."
     if ! curl -s --connect-timeout 2 "$NODE1/get/test" > /dev/null 2>&1; then
-        echo -e "${RED}Node 1 ($NODE1) niedostepny!${NC}"
-        echo "Uruchom: cargo run -- --bind 127.0.0.1:5000"
+        echo -e "${RED}Node 1 ($NODE1) unavailable!${NC}"
+        echo "Run: cargo run -- --bind 127.0.0.1:5000"
         exit 1
     fi
     if ! curl -s --connect-timeout 2 "$NODE2/get/test" > /dev/null 2>&1; then
-        echo -e "${RED}Node 2 ($NODE2) niedostepny!${NC}"
-        echo "Uruchom: cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000"
+        echo -e "${RED}Node 2 ($NODE2) unavailable!${NC}"
+        echo "Run: cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000"
         exit 1
     fi
-    echo -e "${GREEN}Oba node'y dostepne${NC}"
+    echo -e "${GREEN}Both nodes are available${NC}"
 }
 
-###################
-# STORAGE TESTS
-###################
+################################################################################
+# STORAGE LAYER TESTS
+# Validates the DistributedMap, PartitionManager, and Replication logic.
+################################################################################
 
 test_storage_basic_put_get() {
     local key="book_$(date +%s)"
@@ -74,17 +90,19 @@ test_storage_basic_put_get() {
     fi
 }
 
+# Validates distributed access: Data written to Node 1 should be immediately
+# readable from Node 2 (simulating a "read-your-writes" or eventual consistency check).
 test_storage_cross_node() {
     local key="crossnode_$(date +%s)"
 
-    # PUT na node1
+    # PUT to node1
     curl -s -X POST "$NODE1/put" \
         -H "Content-Type: application/json" \
         -d "{\"key\": \"$key\", \"value_json\": \"{\\\"name\\\": \\\"Cross Node Book\\\", \\\"author\\\": \\\"Distributed\\\"}\"}" > /dev/null
 
     sleep 0.5
 
-    # GET z node2
+    # GET from node2
     local response=$(curl -s "$NODE2/get/$key")
     if echo "$response" | grep -q "Cross Node Book"; then
         pass "Storage: cross-node GET (put node1 -> get node2)"
@@ -96,12 +114,12 @@ test_storage_cross_node() {
 test_storage_overwrite() {
     local key="overwrite_test"
 
-    # Pierwszy PUT
+    # First PUT
     curl -s -X POST "$NODE1/put" \
         -H "Content-Type: application/json" \
         -d "{\"key\": \"$key\", \"value_json\": \"{\\\"name\\\": \\\"Version 1\\\", \\\"author\\\": \\\"Author\\\"}\"}" > /dev/null
 
-    # Drugi PUT (overwrite)
+    # Second PUT (overwrite)
     curl -s -X POST "$NODE1/put" \
         -H "Content-Type: application/json" \
         -d "{\"key\": \"$key\", \"value_json\": \"{\\\"name\\\": \\\"Version 2\\\", \\\"author\\\": \\\"Author\\\"}\"}" > /dev/null
@@ -127,7 +145,7 @@ test_storage_multiple_keys() {
     local prefix="multi_$(date +%s)"
     local all_ok=true
 
-    # PUT 10 roznych kluczy
+    # PUT 10 different keys
     for i in {1..10}; do
         curl -s -X POST "$NODE1/put" \
             -H "Content-Type: application/json" \
@@ -136,7 +154,7 @@ test_storage_multiple_keys() {
 
     sleep 0.5
 
-    # Sprawdz losowe klucze z obu node'ow
+    # Check random keys from both nodes
     for i in 3 7; do
         local resp1=$(curl -s "$NODE1/get/${prefix}_$i")
         local resp2=$(curl -s "$NODE2/get/${prefix}_$i")
@@ -152,9 +170,10 @@ test_storage_multiple_keys() {
     fi
 }
 
-###################
-# EXECUTOR TESTS
-###################
+################################################################################
+# EXECUTOR LAYER TESTS
+# Validates the DistributedQueue, Task Registry, and Worker Pool.
+################################################################################
 
 test_executor_basic_submit() {
     local response=$(curl -s -X POST "$NODE1/task/submit" \
@@ -168,6 +187,8 @@ test_executor_basic_submit() {
     fi
 }
 
+# Submits a task and polls its status until completion.
+# Verifies the state transition: Pending -> Running -> Completed.
 test_executor_lifecycle() {
     # Submit task
     local response=$(curl -s -X POST "$NODE1/task/submit" \
@@ -181,12 +202,12 @@ test_executor_lifecycle() {
         return
     fi
 
-    # Sprawdz status (powinien byc Pending lub Running)
+    # Check status (should be Pending or Running)
     sleep 1
     local status=$(curl -s "$NODE1/task/status/$task_id")
 
     if echo "$status" | grep -qE '"status":"(Pending|Running)"'; then
-        # Poczekaj na ukonczenie (test_handler trwa 2s + bufor)
+        # Wait for completion (test_handler takes 2s + buffer)
         sleep 4
         status=$(curl -s "$NODE1/task/status/$task_id")
 
@@ -201,7 +222,7 @@ test_executor_lifecycle() {
 }
 
 test_executor_cross_node_submit() {
-    # Submit na node2
+    # Submit to node2
     local response=$(curl -s -X POST "$NODE2/task/submit" \
         -H "Content-Type: application/json" \
         -d '{"task": {"Execute": {"handler": "test_handler", "payload": {"msg": "cross node"}}}}')
@@ -215,7 +236,7 @@ test_executor_cross_node_submit() {
 
     sleep 1
 
-    # Sprawdz status z node1
+    # Check status from node1
     local status=$(curl -s "$NODE1/task/status/$task_id")
     if echo "$status" | grep -qE '"status":"(Pending|Running|Completed)"'; then
         pass "Executor: cross-node submit and status query"
@@ -227,7 +248,7 @@ test_executor_cross_node_submit() {
 test_executor_concurrent_tasks() {
     local task_ids=()
 
-    # Submit 5 taskow jednoczesnie
+    # Submit 5 tasks concurrently
     for i in {1..5}; do
         response=$(curl -s -X POST "$NODE1/task/submit" \
             -H "Content-Type: application/json" \
@@ -236,7 +257,7 @@ test_executor_concurrent_tasks() {
         task_ids+=("$task_id")
     done
 
-    # Poczekaj az taski zostana przetworzone
+    # Wait for tasks to be processed
     sleep 2
 
     local found=0
@@ -272,20 +293,23 @@ test_executor_unknown_handler() {
     if echo "$status" | grep -q '"Failed"'; then
         pass "Executor: unknown handler results in Failed status"
     else
-        # Moze byc tez Pending jesli jeszcze nie przetworzone
+        # Could also be Pending if not yet processed
         pass "Executor: unknown handler - task accepted (will fail on execution)"
     fi
 }
 
-###################
-# INTEGRATION
-###################
+################################################################################
+# INTEGRATION & STRESS TESTS
+# Simulates realistic usage patterns with concurrent operations.
+################################################################################
 
+# Generates mixed traffic (Storage Writes + Task Submissions) simultaneously
+# to ensure the system handles locking and resource contention correctly.
 test_integration_mixed_load() {
     local all_ok=true
     local prefix="integ_$(date +%s)"
 
-    # Rownoczesnie: storage PUT + executor submit
+    # Simultaneously: storage PUT + executor submit
     for i in {1..3}; do
         # Storage
         curl -s -X POST "$NODE1/put" \
@@ -301,7 +325,7 @@ test_integration_mixed_load() {
     wait
     sleep 1
 
-    # Sprawdz storage
+    # Check storage
     for i in {1..3}; do
         resp=$(curl -s "$NODE2/get/${prefix}_book_$i")
         if ! echo "$resp" | grep -q "Integration Book $i"; then

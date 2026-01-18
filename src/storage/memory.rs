@@ -1,3 +1,8 @@
+//! Distributed Map Implementation
+//!
+//! The core component providing a `HashMap`-like interface that spans the entire cluster.
+//! It handles the complexity of local vs. remote storage, replication, and concurrency.
+
 use super::partitioner::PartitionManager;
 use super::protocol::*;
 use crate::membership::{service::MembershipService, types::NodeId};
@@ -12,6 +17,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+/// A distributed, concurrent key-value store.
+///
+/// Generic over `K` (Key) and `V` (Value), supporting any serializable data types.
+/// Internally uses `DashMap` for high-performance concurrent local access.
 pub struct DistributedMap<K, V> {
     local_data: Arc<DashMap<u32, DashMap<K, V>>>,
     processed_ops: Arc<DashMap<String, u64>>,
@@ -56,6 +65,10 @@ where
         }
     }
 
+    /// Idempotency check.
+    ///
+    /// Tracks recently processed operation IDs (`op_id`) to prevent applying the
+    /// same replication message multiple times (exactly-once processing).
     fn should_process(&self, op_id: &str) -> bool {
         if self.processed_ops.contains_key(op_id) {
             return false;
@@ -348,6 +361,8 @@ where
         None
     }
 
+    /// Performs an internal HTTP GET request to retrieve a value from a remote node.
+    /// Used during "scatter-gather" queries or when the local node is not the owner.
     pub async fn fetch_remote(&self, owner_id: &NodeId, key: &K) -> Result<Option<V>> {
         let node = self
             .membership
@@ -452,6 +467,12 @@ where
         self.put_with_op(key, value, op_id).await
     }
 
+    /// The main entry point for writing data.
+    ///
+    /// 1. Determines the partition for the key.
+    /// 2. If local node is Primary: Stores locally and replicates to backups.
+    /// 3. If local node is NOT Primary: Forwards the request to the correct owner.
+    /// 4. If local node is Primary but offline: Falls back to local storage (emergency mode).
     pub async fn put_with_op(&self, key: K, value: V, op_id: String) -> Result<()> {
         if !self.should_process(&op_id) {
             return Ok(());

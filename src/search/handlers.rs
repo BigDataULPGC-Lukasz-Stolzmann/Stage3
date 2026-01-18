@@ -1,3 +1,8 @@
+//! Search API Handlers
+//!
+//! Axum route handlers that expose search engine functionality via HTTP.
+//! These endpoints handle parameter parsing, validation, and calling the core search engine.
+
 use super::engine::search;
 use super::types::SearchResultItem;
 use super::types::{BookMetadata, SearchResponse};
@@ -31,6 +36,10 @@ pub struct CreateBookResponse {
     pub book_id: String,
 }
 
+/// Manual entry point for creating book metadata.
+///
+/// Useful for testing or manual insertion. It creates the metadata record
+/// and immediately submits an asynchronous task to the queue to index the content.
 pub async fn handle_create_book(
     Extension(books_map): Extension<Arc<DistributedMap<String, BookMetadata>>>,
     Extension(queue): Extension<Arc<DistributedQueue>>,
@@ -77,6 +86,15 @@ pub async fn handle_create_book(
     }
 }
 
+/// Primary Search Endpoint.
+///
+/// Executes a search query against the distributed index.
+///
+/// ## Steps
+/// 1. **Parse**: Extracts query string (`q`), limit, and offset.
+/// 2. **Search**: Calls `engine::search` to get ranked results.
+/// 3. **Paginate**: Slices the result vector based on `offset` and `limit`.
+/// 4. **Response**: Wraps the data in a standardized JSON envelope.
 pub async fn handle_search(
     Query(params): Query<SearchParams>,
     Extension(index_map): Extension<Arc<DistributedMap<String, Vec<String>>>>,

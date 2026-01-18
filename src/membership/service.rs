@@ -1,3 +1,11 @@
+//! Membership Service Implementation
+//!
+//! Manages the lifecycle of the local node and maintains the `members` list (the local view of the cluster).
+//! Runs three concurrent background loops:
+//! 1. **Gossip Loop**: Randomly probes other nodes.
+//! 2. **Receive Loop**: Handles incoming UDP messages.
+//! 3. **Failure Detection**: Monitors timestamps to transition nodes from Suspect to Dead.
+
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -22,6 +30,10 @@ pub struct MembershipService {
 }
 
 impl MembershipService {
+    /// Initializes the membership service.
+    ///
+    /// If `seed_nodes` are provided, it immediately attempts to `Join` the existing cluster.
+    /// Binds to a UDP port for gossip (internal) and calculates the HTTP port (external API) based on it.
     pub async fn new(bind_addr: SocketAddr, seed_nodes: Vec<SocketAddr>) -> Result<Arc<Self>> {
         let socket = UdpSocket::bind(bind_addr).await?;
         let incarnation_counter = Arc::new(RwLock::new(1));
@@ -97,6 +109,11 @@ impl MembershipService {
             .collect()
     }
 
+    /// The heartbeat of the protocol.
+    ///
+    /// Periodically selects a random "Alive" peer and sends a `Ping`.
+    /// This randomized probing ensures that information (state changes) spreads epidemically
+    /// through the cluster (gossip) with O(log N) convergence.
     async fn gossip_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(GOSSIP_INTERVAL);
 
@@ -319,6 +336,12 @@ impl MembershipService {
         }
     }
 
+    /// Handles a report that a specific node is suspected to be down.
+    ///
+    /// **Self-Defense Mechanism**:
+    /// If the local node receives a `Suspect` message regarding *itself*, it increments its
+    /// own `incarnation` number and immediately broadcasts an `Alive` message.
+    /// This effectively "refutes" the suspicion and forces other nodes to accept it is alive.
     async fn handle_suspect(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
         let msg_to_broadcast = {
             match self.members.get_mut(&node_id) {
@@ -427,6 +450,10 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Monitors the `last_seen` timestamps of all members.
+    ///
+    /// - If a node hasn't been seen for `SUSPECT_TIMEOUT`, it is marked as `Suspect`.
+    /// - If it remains `Suspect` for `DEAD_TIMEOUT`, it is marked as `Dead` and removed from consideration.
     async fn failure_detection_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(FAILURE_DETECTION_INTERVAL);
 

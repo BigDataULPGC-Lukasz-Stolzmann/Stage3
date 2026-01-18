@@ -1,3 +1,13 @@
+//! Storage Module Tests
+//!
+//! Validates the data distribution logic and local storage mechanics.
+//!
+//! ## Test Scopes
+//! - **Partitioner**: Ensures deterministic hashing and fair distribution of keys.
+//! - **DistributedMap**: Verifies local storage operations (Put/Get) and data persistence.
+//!
+//! *Note: Network-dependent operations (replication, forwarding) are tested in integration tests.*
+
 #[cfg(test)]
 mod tests {
     use crate::membership::service::MembershipService;
@@ -24,10 +34,10 @@ mod tests {
         let membership = MembershipService::new(bind_addr, vec![]).await.unwrap();
         let partitioner = PartitionManager::new(membership);
 
-        // Ten sam klucz -> ta sama partycja
+        // Same key -> same partition
         let p1 = partitioner.get_partition("book_100");
         let p2 = partitioner.get_partition("book_100");
-        assert_eq!(p1, p2, "Ta sama wartość powinna dać tę samą partycję");
+        assert_eq!(p1, p2, "The same value should yield the same partition");
     }
 
     #[tokio::test]
@@ -36,13 +46,13 @@ mod tests {
         let membership = MembershipService::new(bind_addr, vec![]).await.unwrap();
         let partitioner = PartitionManager::new(membership);
 
-        // Testuj wiele kluczy
+        // Test multiple keys
         for i in 0..1000 {
             let key = format!("test_key_{}", i);
             let partition = partitioner.get_partition(&key);
             assert!(
                 partition < partitioner.num_partitions,
-                "Partycja {} powinna być < {}",
+                "Partition {} should be < {}",
                 partition,
                 partitioner.num_partitions
             );
@@ -55,7 +65,7 @@ mod tests {
         let membership = MembershipService::new(bind_addr, vec![]).await.unwrap();
         let partitioner = PartitionManager::new(membership);
 
-        // Sprawdź rozkład partycji (czy nie wszystkie trafiają do jednej)
+        // Check partition distribution (ensure not all keys go to one bucket)
         let mut partition_counts = std::collections::HashMap::new();
 
         for i in 0..10000 {
@@ -64,11 +74,11 @@ mod tests {
             *partition_counts.entry(partition).or_insert(0) += 1;
         }
 
-        // Przy 256 partycjach i 10000 kluczach, każda powinna mieć ~39 kluczy
-        // Sprawdzamy czy mamy przynajmniej 100 różnych partycji (rozsądny rozkład)
+        // With 256 partitions and 10000 keys, each should have ~39 keys.
+        // We check if we have at least 100 used partitions (reasonable distribution).
         assert!(
             partition_counts.len() > 100,
-            "Powinno być więcej niż 100 różnych partycji, jest: {}",
+            "Should have more than 100 distinct partitions used, got: {}",
             partition_counts.len()
         );
     }
@@ -81,7 +91,7 @@ mod tests {
 
         let owners = partitioner.get_owners(0);
 
-        // Z jednym nodem dostajemy tylko primary (replication_factor ogranicza sie do liczby nodow)
+        // With one node, we only get the primary (replication_factor is capped by node count)
         assert_eq!(owners.len(), 1);
     }
 
@@ -93,16 +103,16 @@ mod tests {
 
         let my_partitions = partitioner.my_primary_partitions();
 
-        // Z jednym nodem, wszystkie partycje należą do nas
+        // With one node, it owns all partitions
         assert_eq!(
             my_partitions.len() as u32,
             partitioner.num_partitions,
-            "Pojedynczy node powinien być primary dla wszystkich partycji"
+            "Single node should be primary for all partitions"
         );
     }
 
     // ============================================================
-    // DISTRIBUTED MAP TESTS (lokalne operacje)
+    // DISTRIBUTED MAP TESTS (Local Operations)
     // ============================================================
 
     #[tokio::test]
@@ -208,14 +218,14 @@ mod tests {
         }
     }
 
-    // UWAGA: Testy dla put() i put_local() wymagają działającego HTTP serwera
-    // bo próbują replikować do backup node przez HTTP.
-    // Te operacje są testowane w integration testach z działającym klastrem.
-    // Unit testy używają tylko store_local() i get_local().
+    // NOTE: Tests for put() and put_local() require a running HTTP server
+    // because they attempt to replicate to backup nodes via HTTP.
+    // These operations are covered in integration tests with a running cluster.
+    // Unit tests here primarily focus on store_local() and get_local().
 
     #[tokio::test]
     async fn test_distributed_map_store_get_roundtrip() {
-        // Test kompletnego cyklu store_local -> get_local
+        // Test complete cycle: store_local -> get_local
         let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let membership = MembershipService::new(bind_addr, vec![]).await.unwrap();
         let partitioner = PartitionManager::new(membership.clone());
@@ -238,7 +248,7 @@ mod tests {
     }
 
     // ============================================================
-    // RÓŻNE TYPY KLUCZY I WARTOŚCI
+    // VARIOUS KEY AND VALUE TYPES
     // ============================================================
 
     #[tokio::test]
@@ -247,7 +257,7 @@ mod tests {
         let membership = MembershipService::new(bind_addr, vec![]).await.unwrap();
         let partitioner = PartitionManager::new(membership.clone());
 
-        // Taki sam typ jak index_map w main.rs
+        // Same type as index_map in main.rs
         let map: DistributedMap<String, Vec<String>> =
             DistributedMap::new(membership, partitioner.clone());
 
@@ -279,7 +289,7 @@ mod tests {
         // Initial empty
         map.store_local(partition, "programming".to_string(), vec![]);
 
-        // Symulacja dodawania książek (jak w index_book handler)
+        // Simulate adding books (like in index_book handler)
         let mut books = map
             .get_local(&"programming".to_string())
             .unwrap_or_default();

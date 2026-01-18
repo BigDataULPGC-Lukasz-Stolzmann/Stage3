@@ -1,3 +1,8 @@
+//! Search Data Types
+//!
+//! Defines the Data Transfer Objects (DTOs) for the search API, including
+//! request parameters, result structures, and book metadata.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -10,6 +15,10 @@ pub struct BookResult {
     pub year: Option<u32>,
 }
 
+/// The standard response format for search queries.
+///
+/// Includes metadata about the query execution (filters, counts) and the
+/// paginated list of results.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub query: String,
@@ -27,6 +36,10 @@ pub struct SearchResultItem {
     pub score: usize,
 }
 
+/// Comprehensive metadata for an indexed book.
+///
+/// This data is stored separately from the inverted index and is retrieved
+/// only when a book appears in search results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookMetadata {
     pub book_id: String,

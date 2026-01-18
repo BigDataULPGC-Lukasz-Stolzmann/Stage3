@@ -1,3 +1,12 @@
+//! Executor Module Tests
+//!
+//! This module contains unit and integration tests for the task execution system.
+//!
+//! ## Test Scopes
+//! - **Registry**: Verifies task registration, lookup, and execution mechanics.
+//! - **Data Types**: Validates serialization/deserialization of task entries and status logic.
+//! - **Business Logic**: Simulates real-world indexing scenarios to ensure handlers process payloads correctly.
+
 #[cfg(test)]
 mod tests {
     use crate::executor::registry::TaskHandlerRegistry;
@@ -6,17 +15,17 @@ mod tests {
     use std::sync::Arc;
 
     // ============================================================
-    // TEST 1: TaskHandlerRegistry - rejestracja i wykonywanie
+    // TEST 1: TaskHandlerRegistry - Registration and Execution
     // ============================================================
 
     #[tokio::test]
     async fn test_registry_register_and_execute() {
-        // ARRANGE: Stwórz registry i licznik wywołań
+        // ARRANGE: Create registry and call counter
         let registry = TaskHandlerRegistry::new();
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        // ACT: Zarejestruj handler
+        // ACT: Register handler
         registry.register("test_handler", move |_task| {
             let count = call_count_clone.clone();
             async move {
@@ -25,11 +34,11 @@ mod tests {
             }
         });
 
-        // ASSERT: Handler jest zarejestrowany
+        // ASSERT: Handler is registered
         assert!(registry.has_handler("test_handler"));
         assert_eq!(registry.handler_count(), 1);
 
-        // ACT: Wykonaj task
+        // ACT: Execute task
         let task = Task::Execute {
             handler: "test_handler".to_string(),
             payload: serde_json::json!({"test": "data"}),
@@ -37,7 +46,7 @@ mod tests {
 
         let result = registry.execute(&task).await;
 
-        // ASSERT: Handler został wywołany
+        // ASSERT: Handler was called
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
@@ -48,14 +57,14 @@ mod tests {
         let registry = TaskHandlerRegistry::new();
 
         let task = Task::Execute {
-            handler: "nieistniejacy_handler".to_string(),
+            handler: "non_existent_handler".to_string(),
             payload: serde_json::json!({}),
         };
 
         // ACT
         let result = registry.execute(&task).await;
 
-        // ASSERT: Powinien zwrócić błąd
+        // ASSERT: Should return an error
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown task handler"));
     }
@@ -66,7 +75,7 @@ mod tests {
         let registry = TaskHandlerRegistry::new();
 
         registry.register("failing_handler", |_task| async {
-            Err(anyhow::anyhow!("Celowy błąd"))
+            Err(anyhow::anyhow!("Intentional error"))
         });
 
         let task = Task::Execute {
@@ -79,7 +88,7 @@ mod tests {
 
         // ASSERT
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Celowy błąd"));
+        assert!(result.unwrap_err().to_string().contains("Intentional error"));
     }
 
     #[tokio::test]
@@ -180,7 +189,7 @@ mod tests {
     }
 
     // ============================================================
-    // TEST 5: Symulacja index_book handlera (bez sieci)
+    // TEST 5: Simulation of index_book handler (no network)
     // ============================================================
 
     #[tokio::test]
@@ -188,11 +197,11 @@ mod tests {
         use crate::search::tokenizer::tokenize_text;
         use std::collections::HashMap;
 
-        // Symulacja index_map jako lokalny HashMap
+        // Simulate index_map as local HashMap
         let index_map: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-        // Symulacja payloadu książki
+        // Simulate book payload
         let book_payload = serde_json::json!({
             "book_id": "book-001",
             "title": "The Rust Programming Language",
@@ -203,7 +212,7 @@ mod tests {
             "unique_words": 0
         });
 
-        // Logika indeksowania (taka sama jak w main.rs)
+        // Indexing logic (same as in main.rs)
         let title = book_payload["title"].as_str().unwrap();
         let book_id = book_payload["book_id"].as_str().unwrap();
 
@@ -218,23 +227,23 @@ mod tests {
         }
         drop(map);
 
-        // ASSERT: Sprawdź że tokeny są w indeksie
+        // ASSERT: Check that tokens are in the index
         let map = index_map.lock().await;
 
-        // "rust" powinien być w indeksie
-        assert!(map.contains_key("rust"), "Token 'rust' powinien być w indeksie");
+        // "rust" should be in the index
+        assert!(map.contains_key("rust"), "Token 'rust' should be in the index");
         assert!(map["rust"].contains(&"book-001".to_string()));
 
-        // "programming" też
+        // "programming" should also be there
         assert!(map.contains_key("programming"));
         assert!(map["programming"].contains(&"book-001".to_string()));
 
-        // "language" też
+        // "language" should also be there
         assert!(map.contains_key("language"));
     }
 
     // ============================================================
-    // TEST 6: Wiele książek z tym samym słowem
+    // TEST 6: Multiple books with the same token
     // ============================================================
 
     #[tokio::test]
@@ -245,11 +254,11 @@ mod tests {
         let index_map: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-        // Uwaga: tokenizer filtruje słowa <= 2 znaków
-        // więc "Go" nie będzie w indeksie (tylko 2 znaki)
+        // Note: tokenizer filters words <= 2 characters
+        // so "Go" will not be in the index (only 2 chars)
         let books = vec![
             ("book-001", "Rust Programming"),
-            ("book-002", "Programming with Golang"),  // "golang" zamiast "go"
+            ("book-002", "Programming with Golang"),  // "golang" instead of "go"
             ("book-003", "Python Programming"),
         ];
 
@@ -268,21 +277,21 @@ mod tests {
         // ASSERT
         let map = index_map.lock().await;
 
-        // "programming" powinien mieć 3 książki
+        // "programming" should map to 3 books
         assert_eq!(map["programming"].len(), 3);
         assert!(map["programming"].contains(&"book-001".to_string()));
         assert!(map["programming"].contains(&"book-002".to_string()));
         assert!(map["programming"].contains(&"book-003".to_string()));
 
-        // "rust" tylko 1
+        // "rust" only 1
         assert_eq!(map["rust"].len(), 1);
 
-        // "golang" tylko 1 (zamiast "go" które jest za krótkie)
+        // "golang" only 1 (instead of "go" which is too short)
         assert_eq!(map["golang"].len(), 1);
     }
 
     // ============================================================
-    // TEST 7: Test pełnego flow (registry + index logic)
+    // TEST 7: Full flow test (registry + index logic)
     // ============================================================
 
     #[tokio::test]
@@ -296,7 +305,7 @@ mod tests {
 
         let index_map_clone = index_map.clone();
 
-        // Rejestracja handlera (podobnie jak w main.rs)
+        // Handler registration (similar to main.rs)
         registry.register("index_book", move |task| {
             let index_map = index_map_clone.clone();
             async move {
@@ -321,7 +330,7 @@ mod tests {
             }
         });
 
-        // Stwórz i wykonaj task
+        // Create and execute task
         let task = Task::Execute {
             handler: "index_book".to_string(),
             payload: serde_json::json!({
@@ -331,9 +340,9 @@ mod tests {
         };
 
         let result = registry.execute(&task).await;
-        assert!(result.is_ok(), "Handler powinien się wykonać bez błędów");
+        assert!(result.is_ok(), "Handler should execute without errors");
 
-        // Sprawdź indeks
+        // Check index
         let map = index_map.lock().await;
         assert!(map.contains_key("advanced"));
         assert!(map.contains_key("rust"));

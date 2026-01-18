@@ -1,3 +1,9 @@
+//! Task Handler Registry
+//!
+//! A dynamic registry that maps string-based task names (e.g., "index_document")
+//! to executable Rust closures. This allows the system to remain generic and
+//! extensible without hardcoding specific task logic in the queue.
+
 use super::types::*;
 
 use anyhow::Result;
@@ -34,6 +40,9 @@ impl TaskHandlerRegistry {
         tracing::info!("Registered task handler: {}", handler_name);
     }
 
+    /// Looks up a handler by name and executes it with the provided JSON payload.
+    ///
+    /// Returns an error if the handler name is unknown or if the handler itself fails.
     pub async fn execute(&self, task: &Task) -> Result<()> {
         match task {
             Task::Execute { handler, payload } => {

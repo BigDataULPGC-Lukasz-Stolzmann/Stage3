@@ -18,6 +18,11 @@ pub enum NodeState {
     Dead,
 }
 
+/// Represents a single member in the cluster.
+///
+/// Contains identity, network addressing, and current lifecycle state.
+/// The `incarnation` field is a logical clock used to order updates and resolve conflicts
+/// (e.g., refuting a false "Suspect" claim).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
@@ -30,6 +35,11 @@ pub struct Node {
     pub last_seen: Option<Instant>,
 }
 
+/// The wire protocol for inter-node communication.
+///
+/// - `Ping/Ack`: Used for liveness checks and state synchronization.
+/// - `Join`: Sent by new nodes to seed nodes to enter the cluster.
+/// - `Suspect/Alive`: Disseminates changes in node health.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipMessage {
     Ping {
