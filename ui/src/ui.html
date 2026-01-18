@@ -1,3 +1,10 @@
+/**
+     * Frontend Controller
+     * * Manages application state, API communication, and UI updates.
+     * The UI acts as a proxy client: it sends requests to the local `main.rs` web server,
+     * which then forwards them to the appropriate nodes in the cluster.
+     */
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -365,6 +372,9 @@
       pollStats();
     }
 
+    // --- API Interactions ---
+    // Wrappers for the backend proxy endpoints (/api/ingest, /api/search).
+    // These functions handle individual user actions (form submissions) and update the result views.
     async function ingest() {
       const id = document.getElementById("bookId").value.trim();
       if (!id) return setStatus(ingestStatus, "Provide an id", true);
@@ -422,6 +432,12 @@
       }
     }
 
+    /**
+     * Metrics Poller
+     * * Periodically fetches internal cluster state from `/api/stats`.
+     * This function is responsible for keeping the "Cluster Health" and 
+     * "Topology" sections in sync with the live system.
+     */
     async function pollStats() {
       try {
         const res = await fetch(`/api/stats?node=${encodeURIComponent(currentNode())}`);
@@ -521,6 +537,15 @@
         .join("");
     }
 
+    /**
+     * Ingestion Load Generator
+     * * Executes a client-side stress test by generating synthetic book data
+     * and sending concurrent requests to the cluster.
+     * * It measures:
+     * - Throughput (Documents per second)
+     * - Latency (Average response time)
+     * - Reliability (Success vs Failure rate)
+     */
     async function runIngestBenchmark() {
       if (benchmarkRunning) return;
       benchmarkRunning = true;
@@ -571,6 +596,12 @@
       benchmarkRunning = false;
     }
 
+    /**
+     * Search Load Generator
+     * * Simulates high-traffic read operations.
+     * Sends a predefined set of queries to the cluster to measure query latency
+     * and system stability under load.
+     */
     async function runSearchBenchmark() {
       if (benchmarkRunning) return;
       benchmarkRunning = true;
@@ -667,6 +698,9 @@
       benchmarkRunning = false;
     }
 
+    // --- Visualization ---
+    // Configurations for Chart.js to render real-time latency histograms
+    // and throughput graphs based on benchmark data.
     function updateIngestChart(times) {
       const ctx = document.getElementById("ingestChart").getContext("2d");
       if (ingestChart) ingestChart.destroy();

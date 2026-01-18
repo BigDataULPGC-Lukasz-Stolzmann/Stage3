@@ -1,3 +1,8 @@
+# Distributed Search Cluster Infrastructure
+#
+# Defines the containerized services required to run the cluster gateway.
+# While the cluster nodes (Rust binaries) run natively on the host for performance
+# during development, Nginx runs in Docker to simulate a production-grade load balancer.
 version: '3.8'
 
 services:
@@ -9,4 +14,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped
-    # network_mode: host  # odkomentuj jesli masz problemy z polaczeniem do nodow
+    # Optional: Host networking mode.
+    # Useful if the Docker container cannot reach the Rust nodes running on localhost.
+    # (Uncomment if you see "Connection refused" errors in Nginx logs).
+    # network_mode: host  

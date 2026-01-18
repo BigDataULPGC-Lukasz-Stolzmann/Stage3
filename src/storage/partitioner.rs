@@ -1,3 +1,8 @@
+//! Partition Manager
+//!
+//! Responsible for mapping keys to partitions and assigning partitions to specific nodes
+//! in the cluster. It ensures a deterministic distribution of data.
+
 use crate::membership::{service::MembershipService, types::NodeId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -9,6 +14,10 @@ pub struct PartitionManager {
     membership: Arc<MembershipService>,
 }
 
+/// Manages the topology of data storage.
+///
+/// Uses simple hashing to assign keys to one of `num_partitions`.
+/// Uses the `MembershipService` to determine which live nodes own those partitions.
 impl PartitionManager {
     pub fn new(membership: Arc<MembershipService>) -> Arc<Self> {
         Self::new_with_replication(membership, 2)
@@ -32,6 +41,13 @@ impl PartitionManager {
         hash % self.num_partitions
     }
 
+    /// Calculates the list of nodes responsible for a specific partition.
+    ///
+    /// - **Index 0**: Primary Owner (handles writes).
+    /// - **Indices 1+**: Backup Owners (passive replicas).
+    ///
+    /// The algorithm provides stability: if a node fails, the next node in the sorted list
+    /// takes over responsibility.
     pub fn get_owners(&self, partition: u32) -> Vec<NodeId> {
         let alive_nodes = self.membership.get_alive_members();
         if alive_nodes.is_empty() {

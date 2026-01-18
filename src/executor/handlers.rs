@@ -1,9 +1,16 @@
+//! HTTP Request Handlers
+//!
+//! Axum route handlers that expose the `DistributedQueue` functionality via HTTP.
+//! These endpoints allow external clients to submit tasks and internal nodes
+//! to forward or replicate tasks.
+
 use super::protocol::*;
 use super::queue::DistributedQueue;
 use super::types::*;
 
 use axum::{Extension, Json, extract::Path, http::StatusCode};
 use std::sync::Arc;
+
 
 pub async fn handle_submit_task(
     Extension(queue): Extension<Arc<DistributedQueue>>,
@@ -26,6 +33,10 @@ pub async fn handle_submit_task(
     }
 }
 
+/// Internal Endpoint: Handles tasks forwarded from other nodes.
+///
+/// When Node A receives a task meant for Node B (the primary), Node A forwards it here.
+/// This handler forces storage as a primary task without re-calculating ownership.
 pub async fn handle_internal_submit_task(
     Extension(queue): Extension<Arc<DistributedQueue>>,
     Json(req): Json<ForwardTaskRequest>,
@@ -150,6 +161,10 @@ pub async fn handle_get_task_status(
     }
 }
 
+/// Internal Endpoint: Handles task replication.
+///
+/// Invoked by a Primary node to store a copy of a task on a Backup node.
+/// Used to ensure data durability in case the Primary node fails.
 pub async fn handle_replicate_task(
     Extension(queue): Extension<Arc<DistributedQueue>>,
     Json(req): Json<ReplicateTaskRequest>,

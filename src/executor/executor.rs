@@ -1,4 +1,13 @@
-use super::queue::DistributedQueue;
+//! Worker Pool Implementation
+//!
+//! Manages the lifecycle of task execution. It spawns background workers that continuously
+//! poll the `DistributedQueue` for pending tasks assigned to this node.
+//!
+//! ## Responsibilities
+//! - **Polling**: continuously checking for `Pending` tasks in owned partitions.
+//! - **Lease Management**: Spawns a background thread to renew task leases during long-running operations.
+//! - **Execution**: Invoking the appropriate handler from the `TaskHandlerRegistry`.use super::queue::DistributedQueue;
+
 use super::registry::TaskHandlerRegistry;
 use super::types::*;
 
@@ -38,6 +47,12 @@ impl TaskExecutor {
         tracing::info!("Task executor started with {} workers", self.worker_count);
     }
 
+
+    /// The main loop for a single worker thread.
+    ///
+    /// 1. Fetches pending tasks from local primary partitions.
+    /// 2. Attempts to "claim" a task (atomic state change).
+    /// 3. If claimed, executes the task while maintaining a liveness lease.
     async fn worker_loop(&self, worker_id: usize) {
         tracing::info!("Worker {} started", worker_id);
 
@@ -103,6 +118,11 @@ impl TaskExecutor {
         }
     }
 
+
+    /// Spawns a background task to periodically renew the lease of a running task.
+    ///
+    /// This prevents the system from marking a long-running task as "failed/timeout"
+    /// while it is actually still processing.
     fn spawn_lease_renewal(&self, task_id: &TaskId) -> tokio::task::JoinHandle<()> {
         let queue = self.queue.clone();
         let task_id = task_id.clone();

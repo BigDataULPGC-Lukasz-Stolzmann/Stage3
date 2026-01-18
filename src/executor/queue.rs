@@ -1,4 +1,15 @@
-use super::protocol::{
+//! Distributed Queue System
+//!
+//! Implements a sharded, replicated task queue. Tasks are assigned to specific partitions
+//! based on their ID. Each partition has a "Primary" node (responsible for execution)
+//! and "Backup" nodes (responsible for data durability).
+//!
+//! ## Responsibilities
+//! - **Partitioning**: Routing tasks to the correct node based on consistent hashing/partition management.
+//! - **Replication**: Ensuring tasks are copied to backup nodes to survive node failures.
+//! - **Forwarding**: Redirecting submission requests to the correct primary node if received on the wrong node.
+
+se super::protocol::{
     ENDPOINT_TASK_INTERNAL_GET, ENDPOINT_TASK_PARTITION_DUMP, ENDPOINT_TASK_REPLICATE,
     ForwardTaskRequest, GetTaskResponse, ReplicateTaskRequest, TaskPartitionDumpResponse,
 };
@@ -17,6 +28,11 @@ pub struct DistributedQueue {
     http_client: reqwest::Client,
 }
 
+
+/// The central state of the distributed system.
+///
+/// Holds the local shard of tasks (`local_tasks`) and coordinates with the
+/// `MembershipService` and `PartitionManager` to determine task ownership.
 impl DistributedQueue {
     pub fn new(membership: Arc<MembershipService>, partitioner: Arc<PartitionManager>) -> Self {
         Self {
@@ -27,6 +43,13 @@ impl DistributedQueue {
         }
     }
 
+
+    /// Submits a new task to the cluster.
+    ///
+    /// This method determines the partition owner for the new task.
+    /// - If the local node is the **Primary**, the task is stored locally and replicated to backups.
+    /// - If a remote node is the Primary, the task is **forwarded** via HTTP.
+    /// - If no nodes are alive (edge case), it falls back to local storage.
     pub async fn submit(&self, task: Task) -> Result<TaskId> {
         let task_id = TaskId::new();
         let partition = self.partitioner.get_partition(&task_id.0);
@@ -289,6 +312,12 @@ impl DistributedQueue {
             .collect()
     }
 
+
+    /// Attempts to lock a pending task for execution by a worker.
+    ///
+    /// Sets the task status to `Running` and establishes a **lease**.
+    /// The lease acts as a heartbeat mechanism; if the worker crashes, the lease expires,
+    /// allowing another node or worker to pick up the task later.
     pub fn try_claim_task(&self, task_id: &TaskId) -> Result<bool> {
         let partition = self.partitioner.get_partition(&task_id.0);
 

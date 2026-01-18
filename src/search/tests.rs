@@ -1,3 +1,12 @@
+//! Search Module Tests
+//!
+//! Validates the search pipeline, including text processing, metadata handling, and ranking logic.
+//!
+//! ## Test Scopes
+//! - **Tokenizer**: Ensures text is correctly split, normalized, and filtered.
+//! - **Scoring**: Verifies that documents matching more query terms are ranked higher.
+//! - **Serialization**: Checks JSON compatibility for API types.
+
 #[cfg(test)]
 mod tests {
     use crate::search::tokenizer::{tokenize_query, tokenize_text};
@@ -20,12 +29,12 @@ mod tests {
     fn test_tokenize_text_lowercase() {
         let tokens = tokenize_text("RUST Programming LANGUAGE");
 
-        // Wszystko powinno być lowercase
+        // Everything should be lowercase
         assert!(tokens.contains("rust"));
         assert!(tokens.contains("programming"));
         assert!(tokens.contains("language"));
 
-        // Uppercase nie powinno być
+        // Uppercase should not exist
         assert!(!tokens.contains("RUST"));
         assert!(!tokens.contains("Programming"));
     }
@@ -34,11 +43,11 @@ mod tests {
     fn test_tokenize_text_filters_short_words() {
         let tokens = tokenize_text("I am a Rust programmer");
 
-        // Słowa > 2 znaków
+        // Words > 2 chars
         assert!(tokens.contains("rust"));
         assert!(tokens.contains("programmer"));
 
-        // Słowa <= 2 znaków są odfiltrowane
+        // Words <= 2 chars are filtered out
         assert!(!tokens.contains("i"));
         assert!(!tokens.contains("am"));
         assert!(!tokens.contains("a"));
@@ -48,7 +57,7 @@ mod tests {
     fn test_tokenize_text_unique_tokens() {
         let tokens = tokenize_text("rust rust rust programming rust");
 
-        // HashSet - powinien być tylko jeden "rust"
+        // HashSet - should contain only one "rust"
         let rust_count = tokens.iter().filter(|t| *t == "rust").count();
         assert_eq!(rust_count, 1);
     }
@@ -63,7 +72,7 @@ mod tests {
         assert!(tokens.contains("are"));
         assert!(tokens.contains("you"));
 
-        // Nie powinno być znaków interpunkcyjnych
+        // Punctuation should be removed
         assert!(!tokens.contains("hello,"));
         assert!(!tokens.contains("world!"));
     }
@@ -77,7 +86,7 @@ mod tests {
     #[test]
     fn test_tokenize_text_only_short_words() {
         let tokens = tokenize_text("I am a be to");
-        assert!(tokens.is_empty(), "Wszystkie słowa <= 2 znaków");
+        assert!(tokens.is_empty(), "All words are <= 2 chars");
     }
 
     #[test]
@@ -87,7 +96,7 @@ mod tests {
         assert!(tokens.contains("rust"));
         assert!(tokens.contains("programming"));
 
-        // Liczby nie są tokenami (regex: [a-zA-Z]+)
+        // Numbers are not tokens (regex: [a-zA-Z]+)
         assert!(!tokens.contains("2024"));
         assert!(!tokens.contains("123"));
     }
@@ -109,7 +118,7 @@ mod tests {
     fn test_tokenize_query_preserves_order() {
         let tokens = tokenize_query("first second third");
 
-        // Vec zachowuje kolejność
+        // Vec preserves order
         assert_eq!(tokens[0], "first");
         assert_eq!(tokens[1], "second");
         assert_eq!(tokens[2], "third");
@@ -119,7 +128,7 @@ mod tests {
     fn test_tokenize_query_filters_short() {
         let tokens = tokenize_query("a is the rust");
 
-        // Tylko "rust" ma > 2 znaki (oraz "the")
+        // Only "rust" (and "the") are > 2 chars
         assert!(tokens.contains(&"rust".to_string()));
         assert!(tokens.contains(&"the".to_string()));
         assert!(!tokens.contains(&"a".to_string()));
@@ -144,7 +153,7 @@ mod tests {
     fn test_tokenize_query_allows_duplicates() {
         let tokens = tokenize_query("rust rust rust");
 
-        // Vec może mieć duplikaty (w przeciwieństwie do tokenize_text)
+        // Vec can contain duplicates (unlike tokenize_text HashSet)
         assert_eq!(tokens.len(), 3);
     }
 
@@ -291,12 +300,12 @@ mod tests {
 
     #[test]
     fn test_search_response_pagination() {
-        // Test dla paginacji - total_count > count
+        // Pagination test - total_count > count
         let response = SearchResponse {
             query: "rust".to_string(),
             filters: HashMap::new(),
-            total_count: 100, // 100 wyników łącznie
-            count: 10,        // ale zwracamy tylko 10
+            total_count: 100, // 100 results total
+            count: 10,        // but only returning 10
             results: vec![],
         };
 
@@ -304,15 +313,15 @@ mod tests {
     }
 
     // ============================================================
-    // SCORING LOGIC TESTS (symulacja engine.rs)
+    // SCORING LOGIC TESTS (simulating engine.rs)
     // ============================================================
 
     #[test]
     fn test_scoring_logic_count_matching_tokens() {
-        // Symulacja logiki z engine.rs
+        // Simulating logic from engine.rs
         let query_tokens = tokenize_query("rust programming language");
 
-        // Symulacja indeksu: słowo -> lista book_ids
+        // Simulated index: word -> list of book_ids
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
         index.insert(
             "rust".to_string(),
@@ -321,7 +330,7 @@ mod tests {
         index.insert("programming".to_string(), vec!["book-1".to_string()]);
         index.insert("language".to_string(), vec!["book-1".to_string()]);
 
-        // Logika scoringu
+        // Scoring logic
         let mut book_scores: HashMap<String, usize> = HashMap::new();
         for token in query_tokens.iter() {
             if let Some(book_ids) = index.get(token) {
@@ -331,10 +340,10 @@ mod tests {
             }
         }
 
-        // book-1 ma wszystkie 3 tokeny
+        // book-1 matches all 3 tokens
         assert_eq!(book_scores.get("book-1"), Some(&3));
 
-        // book-2 ma tylko "rust"
+        // book-2 matches only "rust"
         assert_eq!(book_scores.get("book-2"), Some(&1));
     }
 
@@ -354,7 +363,7 @@ mod tests {
             }
         }
 
-        assert!(book_scores.is_empty(), "Żadna książka nie powinna pasować");
+        assert!(book_scores.is_empty(), "No books should match");
     }
 
     // ============================================================
@@ -365,32 +374,31 @@ mod tests {
     fn test_tokenize_text_special_characters() {
         let tokens = tokenize_text("C++ is not C# but Rust is great!");
 
-        // Tylko słowa alfabetyczne
+        // Only alphabetic words
         assert!(tokens.contains("not"));
         assert!(tokens.contains("but"));
         assert!(tokens.contains("rust"));
         assert!(tokens.contains("great"));
 
-        // C++ i C# nie przejdą przez regex [a-zA-Z]+
+        // C++ and C# fail the regex [a-zA-Z]+
         assert!(!tokens.contains("c++"));
         assert!(!tokens.contains("c#"));
     }
 
     #[test]
     fn test_tokenize_unicode() {
-        // Regex [a-zA-Z]+ nie obsługuje unicode
+        // Regex [a-zA-Z]+ does not support unicode
         let tokens = tokenize_text("Książka о программировании");
 
-        // Tylko ASCII przechodzi przez regex [a-zA-Z]+
-        // "Książka" dzieli się na "Ksi" (przed ą) i "ka" (po ą)
-        // ale "ka" ma tylko 2 znaki, więc jest odfiltrowane
+        // Only ASCII passes the [a-zA-Z]+ regex
+        // "Książka" splits into "Ksi" (before ą) and "ka" (after ą)
+        // but "ka" has only 2 chars, so it's filtered
 
-        // Sprawdzamy że nie ma pełnych słów z unicode
+        // Check that full unicode words are NOT present
         assert!(!tokens.contains("książka"));
         assert!(!tokens.contains("программировании"));
 
-        // Możliwe że tokeny są puste lub zawierają tylko fragmenty
-        // To dokumentuje ograniczenie tokenizera dla nie-ASCII
+        // Documenting limitation for non-ASCII text
         println!("Tokens from unicode text: {:?}", tokens);
     }
 }

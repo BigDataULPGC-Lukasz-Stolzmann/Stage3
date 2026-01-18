@@ -1,8 +1,18 @@
 #!/bin/bash
 
-# Executor Test Suite
-# Uruchom klaster najpierw: cargo run -- --bind 127.0.0.1:5000
-# Dodaj node: cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000
+# ==============================================================================
+# Executor Specific Test Suite
+# ==============================================================================
+#
+# Focused tests for the Task Execution Engine. Unlike the full integration suite,
+# this script relies on `jq` for parsing JSON responses and provides more
+# detailed output for debugging task states.
+#
+# ## Usage
+# 1. Start Cluster: `cargo run -- --bind 127.0.0.1:5000`
+# 2. Run Tests: `./test_executor.sh`
+#
+# ==============================================================================
 
 BASE_URL="http://127.0.0.1:6000"  # port 5000 + 1000
 BASE_URL_NODE2="http://127.0.0.1:6001"  # port 5001 + 1000
@@ -10,8 +20,11 @@ BASE_URL_NODE2="http://127.0.0.1:6001"  # port 5001 + 1000
 echo "=== Executor Test Suite ==="
 echo ""
 
-# Test 1: Submit task (podstawowy)
-echo "📝 Test 1: Submit task"
+# ------------------------------------------------------------------------------
+# Test 1: Basic Task Submission
+# Sends a simple payload to the 'test_handler' and extracts the returned Task ID.
+# ------------------------------------------------------------------------------
+echo "Test 1: Submit task"
 TASK_RESPONSE=$(curl -s -X POST "$BASE_URL/task/submit" \
   -H "Content-Type: application/json" \
   -d '{
@@ -29,13 +42,17 @@ echo "Task ID: $TASK_ID"
 echo ""
 
 # Test 2: Check task status
-echo "📊 Test 2: Check task status"
+echo "Test 2: Check task status"
 sleep 1
 curl -s "$BASE_URL/task/status/$TASK_ID" | jq '.'
 echo ""
 
-# Test 3: Submit task do drugiego node'a (distributed)
-echo "🌐 Test 3: Submit task to node 2 (distributed)"
+# ------------------------------------------------------------------------------
+# Test 3: Distributed Submission
+# Submits a task to Node 2 but queries status from Node 1.
+# This proves that the DistributedQueue is correctly sharing state across the cluster.
+# ------------------------------------------------------------------------------
+echo "Test 3: Submit task to node 2 (distributed)"
 curl -s -X POST "$BASE_URL_NODE2/task/submit" \
   -H "Content-Type: application/json" \
   -d '{
@@ -48,8 +65,12 @@ curl -s -X POST "$BASE_URL_NODE2/task/submit" \
   }' | jq '.'
 echo ""
 
-# Test 4: Submit multiple tasks (burst)
-echo "🚀 Test 4: Submit 5 tasks in burst"
+# ------------------------------------------------------------------------------
+# Test 4: Burst Mode
+# Submits multiple tasks in rapid succession to test the queue's ability to
+# buffer pending tasks while workers are busy.
+# ------------------------------------------------------------------------------
+echo "Test 4: Submit 5 tasks in burst"
 for i in {1..5}; do
   RESPONSE=$(curl -s -X POST "$BASE_URL/task/submit" \
     -H "Content-Type: application/json" \
@@ -65,8 +86,13 @@ for i in {1..5}; do
 done
 echo ""
 
-# Test 5: Unknown handler (error case)
-echo "❌ Test 5: Submit task with unknown handler (should fail)"
+# ------------------------------------------------------------------------------
+# Test 5: Error Handling
+# Submits a task with a non-existent handler name.
+# Expectation: The system accepts the task, but the worker marks it as 'Failed'
+# upon execution attempt.
+# ------------------------------------------------------------------------------
+echo "Test 5: Submit task with unknown handler (should fail)"
 curl -s -X POST "$BASE_URL/task/submit" \
   -H "Content-Type: application/json" \
   -d '{

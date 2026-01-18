@@ -1,6 +1,8 @@
 use crate::membership::types::NodeId;
 use serde::{Deserialize, Serialize};
 
+/// Unique identifier for a task within the cluster.
+/// Wrapper around a UUID string to ensure global uniqueness.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TaskId(pub String);
 
@@ -26,6 +28,10 @@ pub enum Task {
     },
 }
 
+/// The internal representation of a task within the queue.
+///
+/// Includes the task definition itself, as well as metadata regarding its
+/// lifecycle state (status, assignment, lease expiration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskEntry {
     pub task: Task,

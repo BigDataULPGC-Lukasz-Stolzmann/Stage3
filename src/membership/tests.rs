@@ -1,3 +1,12 @@
+//! Membership Module Tests
+//!
+//! Validates the fundamental components of the cluster membership system.
+//!
+//! ## Test Scopes
+//! - **Data Structures**: Ensures uniqueness of IDs and correct serialization of wire protocol messages.
+//! - **Service Logic**: Verifies initialization, member management, and address calculation.
+//! - **Conflict Resolution**: Tests the logic behind incarnation numbers (CRDT-like state precedence).
+
 #[cfg(test)]
 mod tests {
     use crate::membership::service::MembershipService;
@@ -14,7 +23,7 @@ mod tests {
         let id1 = NodeId::new();
         let id2 = NodeId::new();
 
-        assert_ne!(id1, id2, "Każde NodeId powinno być unikalne");
+        assert_ne!(id1, id2, "Each NodeId should be unique");
     }
 
     #[test]
@@ -40,7 +49,7 @@ mod tests {
         set.insert(id2); // should not increase size (duplicate)
         set.insert(id3);
 
-        assert_eq!(set.len(), 2, "HashSet powinien mieć 2 unikalne NodeId");
+        assert_eq!(set.len(), 2, "HashSet should have 2 unique NodeIds");
     }
 
     // ============================================================
@@ -275,7 +284,7 @@ mod tests {
             .await
             .expect("Failed to create service");
 
-        // Powinien mieć siebie jako członka
+        // Should have itself as a member
         assert_eq!(service.members.len(), 1);
 
         let alive = service.get_alive_members();
@@ -316,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_services_different_ports() {
-        // Tworzymy dwa serwisy na różnych portach
+        // Create two services on different ports
         let service1 = MembershipService::new("127.0.0.1:0".parse().unwrap(), vec![])
             .await
             .unwrap();
@@ -325,21 +334,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Powinny mieć różne NodeId
+        // Should have different NodeIds
         assert_ne!(service1.local_node.id, service2.local_node.id);
 
-        // Każdy powinien mieć tylko siebie
+        // Each should only have itself
         assert_eq!(service1.members.len(), 1);
         assert_eq!(service2.members.len(), 1);
     }
 
     // ============================================================
-    // INCARNATION TESTS (ważne dla CRDT-like conflict resolution)
+    // INCARNATION TESTS (critical for CRDT-like conflict resolution)
     // ============================================================
 
     #[test]
     fn test_incarnation_comparison() {
-        // Wyższa inkarnacja wygrywa
+        // Higher incarnation wins
         let node_v1 = Node {
             id: NodeId("node-x".to_string()),
             gossip_addr: "127.0.0.1:5000".parse().unwrap(),
@@ -353,12 +362,12 @@ mod tests {
             id: NodeId("node-x".to_string()),
             gossip_addr: "127.0.0.1:5000".parse().unwrap(),
             http_addr: "127.0.0.1:6000".parse().unwrap(),
-            state: NodeState::Suspect, // zmieniony state
-            incarnation: 2,            // wyższa inkarnacja
+            state: NodeState::Suspect, // changed state
+            incarnation: 2,            // higher incarnation
             last_seen: None,
         };
 
-        // Symulacja logiki merge - wyższa inkarnacja powinna wygrać
+        // Simulation of merge logic - higher incarnation should win
         assert!(node_v2.incarnation > node_v1.incarnation);
     }
 }

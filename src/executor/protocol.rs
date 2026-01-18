@@ -1,3 +1,10 @@
+//! Network Protocol Definitions
+//!
+//! Defines the Data Transfer Objects (DTOs) used for HTTP communication between nodes
+//! regarding task submission, forwarding, and replication.
+//!
+//! Constants define the specific API endpoints used for internal cluster communication.
+
 use super::types::*;
 use crate::membership::types::NodeId;
 use serde::{Deserialize, Serialize};
