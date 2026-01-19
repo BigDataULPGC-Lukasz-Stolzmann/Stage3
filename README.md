@@ -290,4 +290,4 @@ The demonstration video covers:
 
 ## License
 
-This project was developed as part of a Big Data systems course.
+This project was developed as part of a Big Data course.
