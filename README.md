@@ -9,8 +9,7 @@ A horizontally-scalable distributed system for data storage, full-text search, a
 - [Prerequisites](#prerequisites)
 - [Building and Running](#building-and-running)
   - [Local Development](#local-development)
-  - [Docker Compose Deployment](#docker-compose-deployment)
-  - [Kubernetes Deployment](#kubernetes-deployment)
+  - [Nginx Load Balancer Setup](#nginx-load-balancer-setup)
 - [API Reference](#api-reference)
 - [Benchmark Procedures](#benchmark-procedures)
 - [Reproducing Benchmarks](#reproducing-benchmarks)
@@ -65,8 +64,7 @@ The system is designed to scale horizontally by adding nodes to the cluster. Eac
 ## Prerequisites
 
 - Rust 1.75+ (2024 edition)
-- Docker and Docker Compose (for containerized deployment)
-- kubectl and a Kubernetes cluster (for Kubernetes deployment)
+- Docker (for running nginx load balancer)
 - curl and jq (for testing)
 
 ## Building and Running
@@ -98,107 +96,44 @@ cargo run --release -- --bind 127.0.0.1:5002 --seed 127.0.0.1:5000
 curl http://127.0.0.1:6000/health/stats
 ```
 
-### Docker Compose Deployment
+### Nginx Load Balancer Setup
 
-1. **Configure node addresses** in `docker-compose.yml`:
-```yaml
-services:
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - node1
-      - node2
+The application nodes run natively (not in Docker). Only the nginx load balancer runs in a Docker container.
+
+1. **Start cluster nodes on your machines**:
+```bash
+# On machine 1 (seed node):
+cargo run --release -- --bind 0.0.0.0:5000
+
+# On machine 2:
+cargo run --release -- --bind 0.0.0.0:5000 --seed <machine1-ip>:5000
+
+# On machine 3:
+cargo run --release -- --bind 0.0.0.0:5000 --seed <machine1-ip>:5000
+
+# On machine 4:
+cargo run --release -- --bind 0.0.0.0:5000 --seed <machine1-ip>:5000
 ```
 
-2. **Update `nginx.conf`** with your node addresses:
+2. **Configure `nginx.conf`** with your node addresses:
 ```nginx
 upstream cluster {
     least_conn;
-    server node1:6000;
-    server node2:6000;
+    server <machine1-ip>:6000;
+    server <machine2-ip>:6000;
+    server <machine3-ip>:6000;
+    server <machine4-ip>:6000;
 }
 ```
 
-3. **Build and start the cluster**:
+3. **Run nginx load balancer in Docker**:
 ```bash
-docker-compose build
-docker-compose up -d
+docker run -d -p 80:80 -v $(pwd)/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine
 ```
 
 4. **Verify deployment**:
 ```bash
 curl http://localhost/health/stats
-```
-
-5. **Scale the cluster**:
-```bash
-docker-compose up -d --scale node=4
-```
-
-6. **Stop the cluster**:
-```bash
-docker-compose down
-```
-
-### Kubernetes Deployment
-
-1. **Create a ConfigMap for Nginx**:
-```bash
-kubectl create configmap nginx-config --from-file=nginx.conf
-```
-
-2. **Deploy the cluster using the provided manifests**:
-```bash
-kubectl apply -f k8s/
-```
-
-3. **Alternatively, deploy manually**:
-
-Create a StatefulSet for cluster nodes:
-```yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: search-cluster
-spec:
-  serviceName: search-cluster
-  replicas: 3
-  selector:
-    matchLabels:
-      app: search-cluster
-  template:
-    metadata:
-      labels:
-        app: search-cluster
-    spec:
-      containers:
-      - name: node
-        image: search-cluster:latest
-        ports:
-        - containerPort: 5000
-          name: gossip
-        - containerPort: 6000
-          name: http
-        args:
-        - "--bind"
-        - "0.0.0.0:5000"
-        - "--seed"
-        - "search-cluster-0.search-cluster:5000"
-```
-
-4. **Expose the service**:
-```bash
-kubectl expose statefulset search-cluster --port=6000 --type=LoadBalancer
-```
-
-5. **Verify pods are running**:
-```bash
-kubectl get pods -l app=search-cluster
-kubectl logs search-cluster-0
 ```
 
 ## API Reference
@@ -220,12 +155,6 @@ kubectl logs search-cluster-0
 |----------|--------|-------------|
 | `/search?q={query}&limit={n}` | GET | Search books with pagination |
 | `/books` | POST | Create book metadata |
-
-### Task Execution
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/task/submit` | POST | Submit a task |
-| `/task/status/{id}` | GET | Get task execution status |
 
 ## Benchmark Procedures
 
@@ -250,47 +179,13 @@ The project includes several test and benchmark scripts to evaluate system perfo
 
 ## Reproducing Benchmarks
 
+Benchmarks should be run on a distributed multi-machine cluster to obtain accurate results. Running locally will not reflect real-world performance.
+
 ### Prerequisites for Benchmarks
 
-1. Start a cluster with at least 2 nodes
+1. Deploy a cluster across multiple machines (4 nodes recommended)
 2. Ensure curl and jq are installed
 3. Have network access to Project Gutenberg (for ingestion tests)
-
-### Running Integration Tests
-
-```bash
-# Start two nodes first
-# Terminal 1:
-cargo run --release -- --bind 127.0.0.1:5000
-
-# Terminal 2:
-cargo run --release -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000
-
-# Terminal 3: Run tests
-chmod +x test_cluster.sh
-./test_cluster.sh
-```
-
-The test script validates:
-- Storage PUT/GET operations
-- Cross-node data reads
-- Data overwrites
-- Task submission and lifecycle
-- Concurrent task execution
-- Error handling for unknown handlers
-
-### Running Executor Tests
-
-```bash
-chmod +x test_executor.sh
-./test_executor.sh
-```
-
-Tests include:
-- Task submission verification
-- Cross-node task distribution
-- Burst task submission (5 concurrent tasks)
-- Unknown handler error handling
 
 ### Running Ingestion Stress Test
 
@@ -304,31 +199,10 @@ This script:
 - Applies 0.2s delay between requests to avoid rate limiting
 - Measures total ingestion time
 
-### Manual Benchmark Commands
+### Monitor Cluster Statistics
 
-**Measure search latency**:
 ```bash
-# Ingest sample data first
-for i in $(seq 1 20); do
-  curl -X POST "http://localhost:6000/ingest/$i"
-  sleep 1
-done
-
-# Run search benchmark
-for i in $(seq 1 100); do
-  time curl -s "http://localhost:6000/search?q=adventure&limit=10" > /dev/null
-done
-```
-
-**Measure concurrent ingestion**:
-```bash
-# Parallel ingestion using GNU parallel
-seq 100 200 | parallel -j 10 "curl -X POST http://localhost:6000/ingest/{}"
-```
-
-**Monitor cluster statistics**:
-```bash
-watch -n 1 'curl -s http://localhost:6000/health/stats | jq'
+watch -n 1 'curl -s http://<load-balancer-ip>/health/stats | jq'
 ```
 
 ### Expected Benchmark Results
@@ -342,7 +216,7 @@ watch -n 1 'curl -s http://localhost:6000/health/stats | jq'
 
 ## Demonstration Video
 
-YouTube Link: [https://youtu.be/x4k3mQ5bvsc?si=w3i-12cmRHhGQIup]
+YouTube Link: [https://youtu.be/x4k3mQ5bvsc?si=kSWDGz84vtQnTOzL]
 
 The demonstration video covers:
 1. Cluster deployment and node discovery
@@ -359,14 +233,13 @@ The demonstration video covers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REPLICATION_FACTOR` | 2 | Number of data replicas |
-| `MAX_BODY_BYTES` | 20MB | Maximum HTTP request body size |
 
 ### Command Line Arguments
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--bind <addr:port>` | Yes | Gossip protocol bind address |
-| `--seed <addr:port>` | No | Seed node address for joining cluster |
+| `--bind <addr:port>` | Yes | Gossip protocol bind address (HTTP API runs on port + 1000) |
+| `--seed <addr:port>` | No* | Address of an existing cluster node to join. *Required when joining an existing cluster; omit only for the first (seed) node |
 
 ## Project Structure
 
@@ -403,15 +276,16 @@ The demonstration video covers:
 │       ├── handlers.rs      # Ingestion handlers
 │       └── types.rs         # Ingestion types
 ├── ui/                      # Web UI (optional)
-│   ├── src/
-│   │   └── main.rs          # UI server
-│   └── src/ui.html          # Web interface
-├── docker-compose.yml       # Docker deployment
+│   ├── Cargo.toml           # UI dependencies
+│   └── src/
+│       ├── main.rs          # UI server
+│       └── ui.html          # Web interface
+├── docker-compose.yml       # Nginx load balancer deployment
 ├── nginx.conf               # Load balancer config
 ├── Cargo.toml               # Rust dependencies
+├── ingest_100_test.sh       # Ingestion stress test
 ├── test_cluster.sh          # Integration tests
-├── test_executor.sh         # Executor tests
-└── ingest_100_test.sh       # Stress test
+└── test_executor.sh         # Executor tests
 ```
 
 ## License
