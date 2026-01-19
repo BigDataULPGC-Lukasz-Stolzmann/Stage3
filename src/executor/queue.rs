@@ -39,11 +39,6 @@ pub struct DistributedQueue {
     http_client: reqwest::Client,
 }
 
-
-/// The central state of the distributed system.
-///
-/// Holds the local shard of tasks (`local_tasks`) and coordinates with the
-/// `MembershipService` and `PartitionManager` to determine task ownership.
 impl DistributedQueue {
     /// Creates a new instance of the DistributedQueue.
     pub fn new(membership: Arc<MembershipService>, partitioner: Arc<PartitionManager>) -> Self {
@@ -55,13 +50,12 @@ impl DistributedQueue {
         }
     }
 
-
     /// Submits a new task to the cluster.
     ///
-    /// This method determines the partition owner for the new task.
-    /// - If the local node is the **Primary**, the task is stored locally and replicated to backups.
-    /// - If a remote node is the Primary, the task is **forwarded** via HTTP.
-    /// - If no nodes are alive (edge case), it falls back to local storage.
+    /// This is the entry point for creating tasks. It calculates the partition owner:
+    /// 1. If **Local Node is Primary**: Stores the task locally and replicates to backups.
+    /// 2. If **Remote Node is Primary**: Forwards the task via HTTP to that node.
+    /// 3. If **No Nodes Alive**: Falls back to local storage (emergency mode).
     pub async fn submit(&self, task: Task) -> Result<TaskId> {
         let task_id = TaskId::new();
         let partition = self.partitioner.get_partition(&task_id.0);
@@ -406,4 +400,215 @@ impl DistributedQueue {
     }
 
     /// Marks a task as either `Completed` or `Failed`.
-    /// Clears the lease
+    /// Clears the lease so it is no longer tracked for expiration.
+    pub fn complete_task(&self, task_id: &TaskId, result: Result<()>) -> Result<()> {
+        let partition = self.partitioner.get_partition(&task_id.0);
+
+        if let Some(partition_map) = self.local_tasks.get(&partition) {
+            if let Some(mut entry) = partition_map.get_mut(task_id) {
+                match result {
+                    Ok(_) => {
+                        entry.status = TaskStatus::Completed;
+                        tracing::info!("Task {} completed", task_id.0);
+                    }
+                    Err(e) => {
+                        entry.status = TaskStatus::Failed {
+                            error: e.to_string(),
+                        };
+                        tracing::error!("Task {} failed: {}", task_id.0, e);
+                    }
+                }
+                entry.lease_expires = None;
+                return Ok(());
+            }
+        }
+
+        Err(anyhow::anyhow!("Task not found"))
+    }
+
+    /// Retrieves a task's details.
+    ///
+    /// 1. Tries local lookup first.
+    /// 2. If not found locally, queries the partition's owner nodes via HTTP.
+    pub async fn get_task(&self, task_id: &TaskId) -> Option<TaskEntry> {
+        // 1. Try local
+        match self.get_task_local(task_id) {
+            Some(task_entry) => {
+                tracing::debug!(
+                    "Task: {:?} found locally at: {:?}",
+                    task_id,
+                    self.membership.local_node.id
+                );
+                Some(task_entry)
+            }
+            // 2. Try remote
+            None => {
+                let partition = self.partitioner.get_partition(&task_id.0);
+                let owners = self.partitioner.get_owners(partition);
+                
+                // If we are not the primary, ask the owners
+                if !owners.is_empty() && owners[0] != self.membership.local_node.id {
+                    for owner in owners.iter() {
+                        match self.fetch_remote(owner, &task_id.0).await {
+                            Ok(Some(task)) => return Some(task),
+                            Ok(None) => continue, // Try next owner (replica)
+                            Err(e) => {
+                                tracing::warn!("Failed to fetch remote task: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Fetches a task from a specific remote node via HTTP.
+    async fn fetch_remote(&self, node_id: &NodeId, key: &str) -> Result<Option<TaskEntry>> {
+        let node = self
+            .membership
+            .get_member(node_id)
+            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
+
+        let addr = node.http_addr;
+
+        let url = format!(
+            "http://{}{}/{}",
+            addr,
+            ENDPOINT_TASK_INTERNAL_GET,
+            key.to_string()
+        );
+
+        let response = self
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("GET request failed {}", response.status()));
+        }
+
+        let get_response: GetTaskResponse = response.json().await?;
+
+        Ok(get_response.task)
+    }
+
+    /// Fetches all tasks for a partition from a remote node (for Anti-Entropy).
+    pub async fn fetch_partition(
+        &self,
+        node_id: &NodeId,
+        partition: u32,
+    ) -> Result<Vec<(TaskId, TaskEntry)>> {
+        let node = self
+            .membership
+            .get_member(node_id)
+            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
+
+        let url = format!(
+            "http://{}{}/{}",
+            node.http_addr,
+            ENDPOINT_TASK_PARTITION_DUMP,
+            partition
+        );
+
+        let response = self
+            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
+            .await?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Task partition dump failed {}", response.status()));
+        }
+
+        let dump: TaskPartitionDumpResponse = response.json().await?;
+        Ok(dump
+            .entries
+            .into_iter()
+            .map(|entry| (entry.task_id, entry.entry))
+            .collect())
+    }
+
+    /// Helper for local lookup only.
+    pub fn get_task_local(&self, task_id: &TaskId) -> Option<TaskEntry> {
+        let partition = self.partitioner.get_partition(&task_id.0);
+
+        if let Some(partition_map) = self.local_tasks.get(&partition) {
+            if let Some(entry) = partition_map.get(task_id) {
+                return Some(entry.clone());
+            }
+        }
+
+        None
+    }
+
+    // --- HTTP Helpers with Backoff ---
+
+    async fn post_with_retry<T: serde::Serialize>(
+        &self,
+        url: String,
+        payload: &T,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .post(url.clone())
+                .json(payload)
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    // Simple jitter to prevent thundering herd
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
+    }
+
+    async fn get_with_retry(
+        &self,
+        url: String,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> Result<reqwest::Response> {
+        let mut delay_ms = 150u64;
+
+        for attempt in 0..attempts {
+            let response = self
+                .http_client
+                .get(url.clone())
+                .timeout(timeout)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt + 1 == attempts {
+                        return Err(anyhow::anyhow!(e));
+                    }
+                    let jitter = rand::random::<u64>() % 50;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
+                    delay_ms = (delay_ms * 2).min(1200);
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Retry attempts exhausted"))
+    }
+}
