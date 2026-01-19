@@ -1,38 +1,85 @@
+//! Search Data Types
+//!
+//! Defines the Data Transfer Objects (DTOs) for the search API, including
+//! request parameters, result structures, and book metadata.
+//!
+//! ## Type Definitions
+//! - **DTOs**: `SearchResponse`, `BookResult`, `SearchResultItem`.
+//! - **Domain Models**: `BookMetadata` (representing the stored document attributes).
+
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
+/// Represents a simplified view of a book result.
+///
+/// Typically used for lightweight listing endpoints or internal data passing
+/// where the full metadata or relevance score is not required.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BookResult {
+    /// Unique numeric identifier for the book.
     pub book_id: u32,
+    /// The title of the book.
     pub title: String,
+    /// The author of the book.
     pub author: String,
+    /// The language code (e.g., "en", "pl").
     pub language: String,
+    /// Publication year, if available.
     pub year: Option<u32>,
 }
 
+/// The standard response format for search queries.
+///
+/// Wraps the actual search results with metadata about the execution context,
+/// enabling pagination and client-side filtering.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
+    /// The original query string provided by the user.
     pub query: String,
+    /// Active filters applied to the search (e.g., `{"language": "en"}`).
     pub filters: HashMap<String, String>,
+    /// The number of results returned in this specific response.
     pub count: usize,
+    /// The list of fully hydrated book metadata for the matching documents.
     pub results: Vec<BookMetadata>,
 }
 
+/// A single item in a ranked search result list.
+///
+/// Includes the relevance score calculated by the search engine.
+/// *Note: `book_id` is a String here, distinct from the `u32` used in `BookMetadata`.*
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultItem {
+    /// The unique identifier of the book (string format).
     pub book_id: String,
+    /// The title of the book.
     pub title: String,
+    /// The author of the book.
     pub author: String,
+    /// The calculated relevance score (higher is better).
+    /// Typically represents the frequency of query term matches within the document.
     pub score: usize,
 }
 
+/// Comprehensive metadata for an indexed book.
+///
+/// This structure is stored in the distributed map and retrieved (hydrated)
+/// when a document matches a search query. It contains all displayable
+/// information about the book.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookMetadata {
+    /// Unique numeric identifier for the book.
     pub book_id: u32,
+    /// The title of the book.
     pub title: String,
+    /// The author of the book.
     pub author: String,
+    /// The language code (e.g., "en").
     pub language: String,
+    /// Publication year, if available.
     pub year: Option<u32>,
+    /// Total number of words in the document body.
     pub word_count: usize,
+    /// Count of distinct normalized tokens in the document.
     pub unique_words: usize,
 }

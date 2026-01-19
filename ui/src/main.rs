@@ -1,13 +1,17 @@
-//! Frontend Dashboard Server
+//! Frontend Dashboard Server & Proxy
 //!
-//! A lightweight Axum-based web server that serves the Single Page Application (UI)
-//! and acts as a CORS proxy/gateway for the distributed cluster.
+//! This crate serves as the **Dashboard Server** and **CORS Proxy** for the cluster.
 //!
-//! ## Responsibilities
-//! - **Static Assets**: Serves the embedded `ui.html` dashboard.
-//! - **API Proxy**: Forwards frontend requests (Ingest, Search, Stats) to the
-//!   actual cluster nodes, handling CORS and URL normalization.
-//! - **Configuration**: Connects to a default cluster node defined by `NODE_URL`.
+//! ## Architectural Role
+//! - **NOT a Load Balancer**: This server does not make traffic distribution decisions.
+//!   Load balancing is handled externally by the **Nginx** container (using `least_conn` strategy).
+//! - **Static Asset Server**: Serves the Single Page Application (SPA) embedded in the binary.
+//! - **CORS Proxy**: Browsers cannot access the cluster nodes directly due to CORS restrictions
+//!   and network topology (e.g., Docker networks). This server exposes a unified API (`/api/*`)
+//!   that forwards requests to the cluster, acting as a gateway for the frontend.
+//!
+//! ## Flow
+//! `Browser -> UI Server (Proxy) -> Nginx/Cluster Node`
 
 use axum::extract::Query;
 use axum::http::StatusCode;
@@ -16,15 +20,20 @@ use axum::{routing::get, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+/// Application state shared across handlers.
+/// Contains the default cluster connection URL and a reusable HTTP client.
 #[derive(Clone)]
 struct AppState {
+    /// Default upstream node (usually the Nginx load balancer or a seed node).
     node_url: String,
+    /// HTTP client for forwarding requests to the cluster.
     client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
 struct IngestParams {
     id: String,
+    /// Optional: Override the target node for this specific request.
     node: Option<String>,
 }
 
@@ -32,14 +41,17 @@ struct IngestParams {
 struct SearchParams {
     q: String,
     limit: Option<usize>,
+    /// Optional: Override the target node for this specific request.
     node: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct NodeParams {
+    /// Optional: Override the target node for this specific request.
     node: Option<String>,
 }
 
+/// Standardized JSON response wrapper for the frontend.
 #[derive(Serialize)]
 struct ProxyResponse {
     status: u16,
@@ -48,11 +60,11 @@ struct ProxyResponse {
 
 /// Entry Point
 ///
-/// Configures the logging system and starts the HTTP server.
+/// Configures the logging system and starts the UI/Proxy server.
 ///
 /// ## Environment Variables
-/// - `NODE_URL`: Default cluster node to connect to (default: `http://localhost`).
-/// - `UI_BIND`: Address to bind the UI server to (default: `127.0.0.1:8080`).
+/// - `NODE_URL`: The default upstream address (e.g., `http://localhost:80` for Nginx).
+/// - `UI_BIND`: The local address to bind the dashboard to (default: `127.0.0.1:8080`).
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -87,21 +99,26 @@ async fn main() -> anyhow::Result<()> {
 /// Serves the main Dashboard HTML.
 ///
 /// The HTML content is compiled into the binary using `include_str!`,
-/// making the executable self-contained (no external static files required).
+/// ensuring the dashboard is a single, portable executable.
 async fn ui() -> Html<&'static str> {
     Html(include_str!("ui.html"))
 }
 
 /// Ingestion Proxy Endpoint.
 ///
-/// Forwards `POST /api/ingest` requests from the browser to the target cluster node's `/ingest/{id}` endpoint.
-/// Allows the frontend to specify a target node via the `node` query parameter, or falls back to the default.
+/// **Role**: Pass-through proxy.
+/// Forwards `POST /api/ingest` from the browser to the target node's `/ingest/{id}` endpoint.
+///
+/// **Why?**: Allows the frontend to issue requests without worrying about CORS headers
+/// or direct network access to the Docker container network.
 async fn api_ingest(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<IngestParams>,
 ) -> Result<Json<ProxyResponse>, (StatusCode, String)> {
     let node_url = resolve_node_url(&state, params.node);
     let url = format!("{}/ingest/{}", node_url, params.id);
+    
+    // Proxy the request to the cluster
     let resp = state
         .client
         .post(url)
@@ -120,8 +137,9 @@ async fn api_ingest(
 
 /// Search Proxy Endpoint.
 ///
-/// Forwards `GET /api/search` requests to the target cluster node.
-/// Handles query parameter encoding (`q`, `limit`) to ensure valid URL formation.
+/// **Role**: Pass-through proxy.
+/// Forwards `GET /api/search` to the target node.
+/// Handles URL encoding of query parameters to ensure safe transmission.
 async fn api_search(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<SearchParams>,
@@ -151,6 +169,9 @@ async fn api_search(
     Ok(Json(ProxyResponse { status, body }))
 }
 
+/// Status Check Proxy Endpoint.
+///
+/// Proxies requests to check if a specific book ID has been indexed.
 async fn api_status(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<IngestParams>,
@@ -174,10 +195,11 @@ async fn api_status(
     Ok(Json(ProxyResponse { status, body }))
 }
 
-/// Cluster Stats Proxy.
+/// Cluster Statistics Proxy.
 ///
-/// Fetches the internal health metrics (`/health/stats`) from a specific node.
-/// This allows the UI to visualize the state of the entire cluster by querying nodes individually.
+/// Fetches internal metrics (`/health/stats`) from a specific node.
+/// This allows the UI to aggregate and visualize metrics from all nodes in the cluster
+/// by querying them individually via this proxy.
 async fn api_stats(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<NodeParams>,
@@ -200,12 +222,12 @@ async fn api_stats(
     Ok(Json(ProxyResponse { status, body }))
 }
 
-/// Helper: Node URL Normalization.
+/// Helper: Target URL Resolution.
 ///
-/// Determines the target URL for a request.
-/// 1. Checks if the client requested a specific node (`override_url`).
-/// 2. If not, uses the server's default `NODE_URL`.
-/// 3. Ensures the URL has the correct protocol (`http://`) and no trailing slashes.
+/// Determines which upstream URL to use for the proxy request:
+/// 1. **Override**: If the client specified a `node` param, use that (allows querying specific nodes).
+/// 2. **Default**: Otherwise, use the configured `NODE_URL` (typically the Nginx gateway).
+/// 3. **Normalization**: Ensures protocol (`http://`) presence and proper formatting.
 fn resolve_node_url(state: &AppState, override_url: Option<String>) -> String {
     let candidate = override_url.unwrap_or_else(|| state.node_url.clone());
     let trimmed = candidate.trim();

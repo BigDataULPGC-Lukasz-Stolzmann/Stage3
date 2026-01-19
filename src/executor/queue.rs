@@ -8,8 +8,9 @@
 //! - **Partitioning**: Routing tasks to the correct node based on consistent hashing/partition management.
 //! - **Replication**: Ensuring tasks are copied to backup nodes to survive node failures.
 //! - **Forwarding**: Redirecting submission requests to the correct primary node if received on the wrong node.
+//! - **Leasing**: Managing task ownership and timeouts for fault-tolerant execution.
 
-se super::protocol::{
+use super::protocol::{
     ENDPOINT_TASK_INTERNAL_GET, ENDPOINT_TASK_PARTITION_DUMP, ENDPOINT_TASK_REPLICATE,
     ForwardTaskRequest, GetTaskResponse, ReplicateTaskRequest, TaskPartitionDumpResponse,
 };
@@ -21,10 +22,20 @@ use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
 
+/// The central component managing distributed task state.
 pub struct DistributedQueue {
+    /// Local storage for tasks.
+    /// Structure: `Partition ID -> Task ID -> TaskEntry`.
+    /// Used `DashMap` for high-concurrency access.
     pub local_tasks: Arc<DashMap<u32, DashMap<TaskId, TaskEntry>>>,
+    
+    /// Service for cluster membership and node discovery.
     pub membership: Arc<MembershipService>,
+    
+    /// Logic for determining partition ownership.
     pub partitioner: Arc<PartitionManager>,
+    
+    /// Client for inter-node communication.
     http_client: reqwest::Client,
 }
 
@@ -34,6 +45,7 @@ pub struct DistributedQueue {
 /// Holds the local shard of tasks (`local_tasks`) and coordinates with the
 /// `MembershipService` and `PartitionManager` to determine task ownership.
 impl DistributedQueue {
+    /// Creates a new instance of the DistributedQueue.
     pub fn new(membership: Arc<MembershipService>, partitioner: Arc<PartitionManager>) -> Self {
         Self {
             local_tasks: Arc::new(DashMap::new()),
@@ -55,6 +67,7 @@ impl DistributedQueue {
         let partition = self.partitioner.get_partition(&task_id.0);
         let owners = self.partitioner.get_owners(partition);
 
+        // Edge case: Cluster startup or network isolation
         if owners.is_empty() {
             tracing::warn!("No alive nodes, storing task locally");
             self.store_local(
@@ -74,6 +87,7 @@ impl DistributedQueue {
         let primary = &owners[0];
 
         if primary == &self.membership.local_node.id {
+            // Case 1: We are the owner.
             tracing::debug!(
                 "Storing task {} in partition {} (I'm primary)",
                 task_id.0,
@@ -92,6 +106,7 @@ impl DistributedQueue {
             )
             .await?;
         } else {
+            // Case 2: Someone else is the owner. Forward it.
             tracing::debug!("Forwarding task {} to primary {:?}", task_id.0, primary);
             self.forward_task(primary, partition, task_id.clone(), task)
                 .await?;
@@ -100,12 +115,17 @@ impl DistributedQueue {
         Ok(task_id)
     }
 
+    /// Stores a task in the local DashMap structure.
+    ///
+    /// This is a low-level operation used by both `submit` (if primary) and
+    /// `handle_replicate_task` (if backup).
     pub fn store_local(&self, partition: u32, task_id: TaskId, entry: TaskEntry) {
         let partition_map = self
             .local_tasks
             .entry(partition)
             .or_insert_with(|| DashMap::new());
 
+        // Only insert if not exists (idempotency)
         if !partition_map.contains_key(&task_id) {
             partition_map.insert(task_id, entry);
         }
@@ -113,6 +133,7 @@ impl DistributedQueue {
         tracing::info!("Stored task in partition {}", partition);
     }
 
+    /// Helper for Anti-Entropy: dumps all tasks in a partition.
     pub fn dump_partition(&self, partition: u32) -> Vec<(TaskId, TaskEntry)> {
         let mut entries = Vec::new();
         if let Some(partition_map) = self.local_tasks.get(&partition) {
@@ -123,6 +144,7 @@ impl DistributedQueue {
         entries
     }
 
+    /// Accessor for Testing.
     pub fn has_partition(&self, partition: u32) -> bool {
         self.local_tasks
             .get(&partition)
@@ -130,6 +152,7 @@ impl DistributedQueue {
             .unwrap_or(false)
     }
 
+    /// Used by Anti-Entropy to bulk-insert tasks received from a peer.
     pub fn apply_partition_entries(&self, partition: u32, entries: Vec<(TaskId, TaskEntry)>) {
         let partition_map = self
             .local_tasks
@@ -177,15 +200,21 @@ impl DistributedQueue {
         (pending, running, completed, failed)
     }
 
+    /// Stores a task locally and synchronously replicates it to all Backup nodes.
+    ///
+    /// Used when this node acts as the Primary for the partition.
     pub async fn store_as_primary(
         &self,
         partition: u32,
         task_id: TaskId,
         entry: TaskEntry,
     ) -> Result<()> {
+        // 1. Write to local storage (WAL-like behavior)
         self.store_local(partition, task_id.clone(), entry.clone());
 
+        // 2. Replicate to all backups
         let owners = self.partitioner.get_owners(partition);
+        // Skip index 0 because that is us (the primary)
         for backup in owners.iter().skip(1) {
             self.replicate_task_to_backup(backup, partition, task_id.clone(), entry.clone())
                 .await?;
@@ -194,6 +223,7 @@ impl DistributedQueue {
         Ok(())
     }
 
+    /// Sends a replication request to a specific backup node.
     async fn replicate_task_to_backup(
         &self,
         backup_node_id: &NodeId,
@@ -212,6 +242,7 @@ impl DistributedQueue {
             entry,
         };
 
+        // Send with retry to handle transient network blips
         let response = self
             .post_with_retry(
                 format!("http://{}{}", node.http_addr, ENDPOINT_TASK_REPLICATE),
@@ -237,6 +268,7 @@ impl DistributedQueue {
         Ok(())
     }
 
+    /// Forwards a task submission to the designated Primary node.
     async fn forward_task(
         &self,
         target: &NodeId,
@@ -271,6 +303,12 @@ impl DistributedQueue {
         Ok(())
     }
 
+    /// Retrieves all tasks assigned to this node (where this node is Primary)
+    /// that are eligible for execution.
+    ///
+    /// Eligible tasks are:
+    /// 1. Status is `Pending`.
+    /// 2. Status is `Running` BUT the lease has expired (worker crashed).
     pub fn my_pending_tasks(&self) -> Vec<(TaskId, TaskEntry)> {
         let my_partitions = self.get_my_primary_partitions();
 
@@ -283,6 +321,7 @@ impl DistributedQueue {
 
                     let is_available = match task_entry.status {
                         TaskStatus::Pending => true,
+                        // Lease expiration check
                         TaskStatus::Running => {
                             if let Some(lease) = task_entry.lease_expires {
                                 now_ms() > lease
@@ -303,6 +342,7 @@ impl DistributedQueue {
         tasks
     }
 
+    /// Identifies partitions for which the local node is the Primary owner.
     fn get_my_primary_partitions(&self) -> Vec<u32> {
         (0..self.partitioner.num_partitions)
             .filter(|&partition| {
@@ -323,12 +363,15 @@ impl DistributedQueue {
 
         if let Some(partition_map) = self.local_tasks.get(&partition) {
             if let Some(mut entry) = partition_map.get_mut(task_id) {
+                // Ensure task is still Pending (another worker might have raced us)
                 if entry.status != TaskStatus::Pending {
                     return Ok(false);
                 }
 
+                // Update state
                 entry.status = TaskStatus::Running;
                 entry.assigned_to = Some(self.membership.local_node.id.clone());
+                // Set initial lease for 30 seconds
                 entry.lease_expires = Some(now_ms() + 30_000);
 
                 tracing::debug!("Claimed task {}", task_id.0);
@@ -339,6 +382,8 @@ impl DistributedQueue {
         Ok(false)
     }
 
+    /// Extends the lease of a currently running task.
+    /// Called periodically by the worker thread to prevent lease expiry.
     pub fn renew_lease(&self, task_id: &TaskId) -> Result<()> {
         let partition = self.partitioner.get_partition(&task_id.0);
 
@@ -360,200 +405,5 @@ impl DistributedQueue {
         Err(anyhow::anyhow!("Task not found"))
     }
 
-    pub fn complete_task(&self, task_id: &TaskId, result: Result<()>) -> Result<()> {
-        let partition = self.partitioner.get_partition(&task_id.0);
-
-        if let Some(partition_map) = self.local_tasks.get(&partition) {
-            if let Some(mut entry) = partition_map.get_mut(task_id) {
-                match result {
-                    Ok(_) => {
-                        entry.status = TaskStatus::Completed;
-                        tracing::info!("Task {} completed", task_id.0);
-                    }
-                    Err(e) => {
-                        entry.status = TaskStatus::Failed {
-                            error: e.to_string(),
-                        };
-                        tracing::error!("Task {} failed: {}", task_id.0, e);
-                    }
-                }
-                entry.lease_expires = None;
-                return Ok(());
-            }
-        }
-
-        Err(anyhow::anyhow!("Task not found"))
-    }
-
-    pub async fn get_task(&self, task_id: &TaskId) -> Option<TaskEntry> {
-        match self.get_task_local(task_id) {
-            Some(task_entry) => {
-                tracing::debug!(
-                    "Task: {:?} found locally at: {:?}",
-                    task_id,
-                    self.membership.local_node.id
-                );
-                Some(task_entry)
-            }
-            None => {
-                let partition = self.partitioner.get_partition(&task_id.0);
-                let owners = self.partitioner.get_owners(partition);
-                if !owners.is_empty() && owners[0] != self.membership.local_node.id {
-                    for owner in owners.iter() {
-                        match self.fetch_remote(owner, &task_id.0).await {
-                            Ok(Some(task)) => return Some(task),
-                            Ok(None) => continue,
-                            Err(e) => {
-                                tracing::warn!("Failed to fetch remote task: {}", e);
-                                continue;
-                            }
-                        }
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    async fn fetch_remote(&self, node_id: &NodeId, key: &str) -> Result<Option<TaskEntry>> {
-        let node = self
-            .membership
-            .get_member(node_id)
-            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
-
-        let addr = node.http_addr;
-
-        let url = format!(
-            "http://{}{}/{}",
-            addr,
-            ENDPOINT_TASK_INTERNAL_GET,
-            key.to_string()
-        );
-
-        let response = self
-            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("GET request failed {}", response.status()));
-        }
-
-        let get_response: GetTaskResponse = response.json().await?;
-
-        Ok(get_response.task)
-    }
-
-    pub async fn fetch_partition(
-        &self,
-        node_id: &NodeId,
-        partition: u32,
-    ) -> Result<Vec<(TaskId, TaskEntry)>> {
-        let node = self
-            .membership
-            .get_member(node_id)
-            .ok_or_else(|| anyhow::anyhow!("Owner node not found: {:?}", node_id))?;
-
-        let url = format!(
-            "http://{}{}/{}",
-            node.http_addr,
-            ENDPOINT_TASK_PARTITION_DUMP,
-            partition
-        );
-
-        let response = self
-            .get_with_retry(url, std::time::Duration::from_millis(500), 3)
-            .await?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(Vec::new());
-        }
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Task partition dump failed {}", response.status()));
-        }
-
-        let dump: TaskPartitionDumpResponse = response.json().await?;
-        Ok(dump
-            .entries
-            .into_iter()
-            .map(|entry| (entry.task_id, entry.entry))
-            .collect())
-    }
-
-    pub fn get_task_local(&self, task_id: &TaskId) -> Option<TaskEntry> {
-        let partition = self.partitioner.get_partition(&task_id.0);
-
-        if let Some(partition_map) = self.local_tasks.get(&partition) {
-            if let Some(entry) = partition_map.get(task_id) {
-                return Some(entry.clone());
-            }
-        }
-
-        None
-    }
-
-    async fn post_with_retry<T: serde::Serialize>(
-        &self,
-        url: String,
-        payload: &T,
-        timeout: std::time::Duration,
-        attempts: usize,
-    ) -> Result<reqwest::Response> {
-        let mut delay_ms = 150u64;
-
-        for attempt in 0..attempts {
-            let response = self
-                .http_client
-                .post(url.clone())
-                .json(payload)
-                .timeout(timeout)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    if attempt + 1 == attempts {
-                        return Err(anyhow::anyhow!(e));
-                    }
-                    let jitter = rand::random::<u64>() % 50;
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
-                    delay_ms = (delay_ms * 2).min(1200);
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!("Retry attempts exhausted"))
-    }
-
-    async fn get_with_retry(
-        &self,
-        url: String,
-        timeout: std::time::Duration,
-        attempts: usize,
-    ) -> Result<reqwest::Response> {
-        let mut delay_ms = 150u64;
-
-        for attempt in 0..attempts {
-            let response = self
-                .http_client
-                .get(url.clone())
-                .timeout(timeout)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    if attempt + 1 == attempts {
-                        return Err(anyhow::anyhow!(e));
-                    }
-                    let jitter = rand::random::<u64>() % 50;
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms + jitter)).await;
-                    delay_ms = (delay_ms * 2).min(1200);
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!("Retry attempts exhausted"))
-    }
-}
+    /// Marks a task as either `Completed` or `Failed`.
+    /// Clears the lease

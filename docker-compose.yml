@@ -1,20 +1,56 @@
-# Distributed Search Cluster Infrastructure
+# ==============================================================================
+# Distributed Search Engine Infrastructure Definition
+# ==============================================================================
 #
-# Defines the containerized services required to run the cluster gateway.
-# While the cluster nodes (Rust binaries) run natively on the host for performance
-# during development, Nginx runs in Docker to simulate a production-grade load balancer.
+# This configuration defines the containerized infrastructure layer for the distributed system.
+#
+# ## Architectural Overview
+# The deployment follows a "Hybrid Infrastructure" model:
+# 1. **Compute Layer (Nodes)**: The Rust cluster nodes run natively on the host machine.
+#    This allows for maximum performance (no container overhead) and simplified debugging
+#    during the development cycle.
+# 2. **Ingress Layer (Gateway)**: Nginx runs as a containerized service, acting as the
+#    single entry point (Reverse Proxy & Load Balancer) for all external traffic.
+#
+# ## Responsibilities
+# - **Traffic Distribution**: Routes incoming HTTP requests to the available Rust nodes
+#   using the configured load balancing algorithm (defined in nginx.conf).
+# - **API Gateway**: Provides a unified API surface (`/search`, `/ingest`) to clients,
+#   abstracting away the complexity of the underlying cluster topology.
+# - **Protocol Termination**: Handles standard HTTP/80 traffic.
+
 version: '3.8'
 
 services:
+  # --- API Gateway & Load Balancer ---
+  # The only component exposed to the outside world.
+  # Clients connect to localhost:80, and Nginx forwards requests to the internal nodes.
   nginx:
     image: nginx:latest
     container_name: search_load_balancer
+    
+    # Port Mapping:
+    # Maps host port 80 to container port 80.
+    # This serves the UI and API endpoints on standard HTTP.
     ports:
       - "80:80"
+    
+    # Configuration Injection:
+    # Mounts the local configuration file into the container.
+    # This file contains the 'upstream' definitions (IP:Port of Rust nodes)
+    # and the routing rules (location blocks).
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    
+    # Restart Policy:
+    # Ensures the load balancer recovers automatically from crashes, maintaining
+    # high availability for the cluster entry point.
     restart: unless-stopped
-    # Optional: Host networking mode.
-    # Useful if the Docker container cannot reach the Rust nodes running on localhost.
-    # (Uncomment if you see "Connection refused" errors in Nginx logs).
-    # network_mode: host  
+    
+    # Network Configuration Note:
+    # If the Nginx container cannot reach the Rust nodes running on 'localhost' (127.0.0.1)
+    # inside the upstream config, enabling 'host' networking mode bridges the container
+    # directly to the host's network stack.
+    #
+    # Uncomment the following line if you encounter "Connection refused" or "502 Bad Gateway" errors.
+    # network_mode: host

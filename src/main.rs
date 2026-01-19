@@ -1,13 +1,22 @@
 //! Application Entry Point
 //!
-//! Bootstraps the distributed node, initializes all subsystems, and starts the HTTP server.
+//! Bootstraps the distributed node, initializes all subsystems, wires dependencies,
+//! and starts the HTTP server.
+//!
+//! ## Startup Flow
+//! 1. **Configuration**: Parses command-line arguments to determine the node's network identity.
+//! 2. **Membership**: Starts the Gossip protocol to join the cluster (or start as a seed).
+//! 3. **Storage**: Initializes the `PartitionManager` and creates distributed maps for Books, Datalake, and Index.
+//! 4. **Executor**: Registers task handlers (e.g., indexing logic) and starts the worker thread pool.
+//! 5. **API**: Configures the Axum HTTP router with public and internal endpoints.
+//! 6. **Background Tasks**: Spawns anti-entropy synchronization loops and monitoring tasks.
 //!
 //! ## Usage
 //! ```sh
-//! # Start the first seed node
+//! # Start the first seed node (Bootstrap)
 //! cargo run -- --bind 127.0.0.1:5000
 //!
-//! # Start a second node joining the seed
+//! # Start a second node joining the seed (Scale Out)
 //! cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000
 //! ```
 
@@ -54,11 +63,13 @@ use std::{collections::HashSet, hash::Hash, str::FromStr};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize logging/tracing to stdout
     tracing_subscriber::fmt()
         // .with_max_level(tracing::Level::DEBUG)
         .with_max_level(tracing::Level::INFO)
         .init();
 
+    // --- 1. Parse Command Line Arguments ---
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
@@ -101,8 +112,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Starting as seed node (founder)");
     }
 
-    // 1. Initialize Cluster Membership
-    // Starts the UDP gossip protocol to discover other nodes and form the cluster.
+    // --- 2. Initialize Cluster Membership ---
+    // Starts the UDP gossip protocol. This service runs independently and maintains
+    // the "Alive/Suspect/Dead" state of all peers.
     let membership = MembershipService::new(bind_addr, seed_nodes).await?;
     tracing::info!("Node ID: {:?}", membership.local_node.id);
 
@@ -112,31 +124,32 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(2);
 
-    // 2. Initialize Storage Layer
-    // The PartitionManager determines which node owns which data shard based on consistent hashing.
-    // We create distinct DistributedMaps for:
-    // - Metadata (books)
-    // - Raw content (datalake)
-    // - Inverted Index (search index)
+    // --- 3. Initialize Storage Layer ---
+    // The PartitionManager is the "brain" of the storage, deciding which node owns which key.
+    // It is shared across all storage maps to ensure consistent topology.
     let partitioner = PartitionManager::new_with_replication(membership.clone(), replication_factor);
 
+    // Distributed Map for Book Metadata (Title, Author, Year, etc.)
     let books = Arc::new(DistributedMap::<String, BookMetadata>::new_with_base(
         membership.clone(),
         partitioner.clone(),
         "/books",
     ));
 
+    // Distributed Map for Raw Content (The full text of the books)
     let datalake = Arc::new(DistributedMap::<String, RawDocument>::new_with_base(
         membership.clone(),
         partitioner.clone(),
         "/datalake",
     ));
 
+    // The distributed task queue for scheduling background jobs
     let queue = Arc::new(DistributedQueue::new(
         membership.clone(),
         partitioner.clone(),
     ));
 
+    // Distributed Map for the Inverted Index (Token -> List of Book IDs)
     let index_map = Arc::new(DistributedMap::<String, Vec<String>>::new_with_base(
         membership.clone(),
         partitioner.clone(),
@@ -144,13 +157,14 @@ async fn main() -> anyhow::Result<()> {
     ));
     let task_registry = TaskHandlerRegistry::new();
 
+    // Clone Arcs for closure capture in the task handler
     let index_map_clone = index_map.clone();
     let datalake_clone = datalake.clone();
 
-    // 3. Register Task Handlers
-    // Defines the logic for background tasks.
-    // The "index_document" handler retrieves raw text from the datalake, tokenizes it,
-    // and updates the distributed inverted index.
+    // --- 4. Register Task Handlers ---
+    // Here we define the actual logic for "index_document".
+    // Ideally, this logic would be in the `search` module, but it's wired here
+    // to have access to the specific `index_map` and `datalake` instances.
     task_registry.register("index_document", move |task| {
         let index_map = index_map_clone.clone();
         let datalake = datalake_clone.clone();
@@ -159,12 +173,16 @@ async fn main() -> anyhow::Result<()> {
             let payload: distributed_cluster::ingestion::types::IndexTaskPayload =
                 serde_json::from_value(payload)?;
 
+            // 1. Fetch raw content from the Datalake (might involve a remote fetch)
             let Some(raw_doc) = datalake.get(&payload.book_id).await else {
                 tracing::warn!("Index task skipped; missing doc {}", payload.book_id);
                 return Ok(());
             };
 
+            // 2. Tokenize the text
             let tokens = tokenize_text(&raw_doc.body);
+            
+            // 3. Update the Inverted Index for every token
             for token in tokens {
                 let mut book_ids = index_map.get(&token).await.unwrap_or_default();
 
@@ -185,8 +203,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(4);
     tracing::info!("Starting {} task workers (auto-detected CPU cores)", worker_count);
 
-    // 4. Start Worker Pool
-    // Spawns background threads that pull tasks from the DistributedQueue and execute them.
+    // --- 5. Start Worker Pool ---
+    // Spawns the background workers that will pull tasks from the DistributedQueue
+    // and execute the handlers registered above.
     let executor = TaskExecutor::new(queue.clone(), task_registry, worker_count);
 
     executor.start().await;
@@ -194,20 +213,22 @@ async fn main() -> anyhow::Result<()> {
     let max_body_bytes = std::env::var("MAX_BODY_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(20 * 1024 * 1024);
+        .unwrap_or(20 * 1024 * 1024); // Default 20MB limit
 
-    // 5. Configure HTTP API
-    // Sets up the REST endpoints for external clients (search, ingest) and
-    // internal cluster communication (replication, forwarding, state transfer).
+    // --- 6. Configure HTTP API ---
+    // Sets up the Axum Router. We group routes by functionality:
+    // - Health/Stats: Monitoring
+    // - Public API: Search, Ingest
+    // - Internal Storage API: Forwarding, Replication, Direct Access
     let app = Router::new()
         .route("/health/routes", get(handle_routes))
         .route("/health/stats", get(handle_stats))
-        // Ingestion + search routes
+        // --- Ingestion & Search (Public) ---
         .route("/ingest/:book_id", post(handle_ingest_gutenberg))
         .route("/ingest/status/:book_id", get(handle_ingest_status))
         .route("/search", get(handle_search))
         .route("/books", post(handle_create_book))
-        // Metadata storage routes
+        // --- Metadata Storage (Internal & Public wrappers) ---
         .nest(
             "/books",
             Router::new()
@@ -224,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_book))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_book)),
         )
-        // Datalake routes
+        // --- Datalake Storage (Internal & Public wrappers) ---
         .nest(
             "/datalake",
             Router::new()
@@ -241,7 +262,7 @@ async fn main() -> anyhow::Result<()> {
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_datalake))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_datalake)),
         )
-        // Index routes
+        // --- Inverted Index Storage (Internal & Public wrappers) ---
         .nest(
             "/index",
             Router::new()
@@ -258,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
                 .route(ENDPOINT_FORWARD_PUT, post(handle_forward_put_index))
                 .route(ENDPOINT_REPLICATE, post(handle_replicate_index)),
         )
-        // Executor routes
+        // --- Executor/Queue API ---
         .route(ENDPOINT_SUBMIT_TASK, post(handle_submit_task))
         .route(
             &format!("{}/:id", ENDPOINT_TASK_STATUS),
@@ -274,6 +295,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(ENDPOINT_INTERNAL_SUBMIT, post(handle_internal_submit_task))
         .route(ENDPOINT_TASK_REPLICATE, post(handle_replicate_task))
+        // Inject state into handlers
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(Extension(membership.clone()))
         .layer(Extension(books.clone()))
@@ -281,13 +303,17 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(queue.clone()))
         .layer(Extension(index_map.clone()));
 
-    // Spawn membership service:
+    // --- 7. Spawn Background Services ---
+    
+    // Start Membership Service (Gossip Loop)
     let service_clone = membership.clone();
     tokio::spawn(async move {
         service_clone.start().await;
     });
 
-    // Spawn resync workers for membership changes:
+    // Start Anti-Entropy Sync Loops
+    // These tasks periodically verify that the local node holds all data it is supposed to own.
+    // If a partition is missing (e.g., after a restart), it fetches it from a peer.
     let books_sync = books.clone();
     let datalake_sync = datalake.clone();
     let index_sync = index_map.clone();
@@ -310,7 +336,7 @@ async fn main() -> anyhow::Result<()> {
         sync_queue_loop(queue_sync, partitioner_sync).await;
     });
 
-    // Spawn stats reporter:
+    // Start Stats Reporter (Logs cluster state periodically)
     let stats_service = membership.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -331,7 +357,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Start HTTP server:
+    // --- 8. Start HTTP Server ---
     let http_port = bind_addr.port() + 1000;
     let http_addr = SocketAddr::new(bind_addr.ip(), http_port);
 
@@ -344,9 +370,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 6. Start Background Synchronization (Anti-Entropy)
-// // Periodically checks if the local node is missing data for partitions it owns
-// (e.g., after a restart or network partition) and fetches it from peers.
+/// Generic Anti-Entropy Sync Loop
+///
+/// Periodically triggers the partition synchronization logic for a specific storage map.
 async fn sync_loop<K, V>(
     name: &'static str,
     map: Arc<DistributedMap<K, V>>,
@@ -399,6 +425,9 @@ where
         let local_id = map.local_node_id();
         let is_primary = owners[0] == local_id;
 
+        // Determine who to fetch from:
+        // - If we are Primary, fetch from a Backup (if we have no data)
+        // - If we are Backup, fetch from the Primary
         let source_owner = if is_primary {
             if map.has_partition(partition) {
                 continue;
@@ -635,6 +664,11 @@ async fn handle_stats(
         mem_total_mb,
     })
 }
+
+// --- Boilerplate Handlers for Generic Storage Wrappers ---
+// These functions map the generic DistributedMap handlers to specific concrete types
+// (String -> BookMetadata, String -> RawDocument, String -> Vec<String>)
+// so they can be registered with the Axum router.
 
 async fn handle_get_internal_book(
     map: Extension<Arc<DistributedMap<String, BookMetadata>>>,

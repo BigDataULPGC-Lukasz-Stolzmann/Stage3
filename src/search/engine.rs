@@ -11,11 +11,18 @@ use std::sync::Arc;
 
 /// Executes the ranking algorithm.
 ///
-/// 1. **Tokenize**: Splits the user query into keywords.
-/// 2. **Lookup**: Fetches the list of document IDs for each token from the `index_map`.
-/// 3. **Score**: Calculates a relevance score based on how many query terms appear in the document.
-/// 4. **Hydrate**: Fetches full metadata (title, author) for the matching document IDs.
-/// 5. **Sort**: Orders results by score (descending).
+/// This function performs the fundamental "Map-Reduce" style operation for search:
+/// 1. **Tokenize**: Splits the user query into normalized keywords.
+/// 2. **Lookup**: Fetches the list of document IDs (postings list) for each token from the distributed `index_map`.
+/// 3. **Score**: Calculates a relevance score. Currently implements a coordination-level match,
+///    counting how many distinct query terms appear in each document.
+/// 4. **Hydrate**: Fetches full metadata (title, author) for the matching document IDs from the `books_map`.
+/// 5. **Sort**: Orders results by score (descending) to present the most relevant documents first.
+///
+/// # Arguments
+/// * `query` - The raw search string from the user.
+/// * `index_map` - Access to the distributed Inverted Index.
+/// * `books_map` - Access to the distributed Metadata Store.
 pub async fn search(
     query: &str,
     index_map: Arc<DistributedMap<String, Vec<String>>>,
@@ -23,6 +30,8 @@ pub async fn search(
 ) -> Vec<(BookMetadata, usize)> {
     let query_tokens = tokenize_query(query);
 
+    // Scoring Phase: Count occurrences of document IDs across all query tokens.
+    // If a document ID appears in the lists for "rust" and "programming", it gets a score of 2.
     let mut book_scores: HashMap<String, usize> = HashMap::new();
     for token in query_tokens.iter() {
         if let Some(book_index) = index_map.get(token).await {
@@ -35,6 +44,8 @@ pub async fn search(
         }
     }
 
+    // Hydration Phase: Resolve Book IDs to full metadata.
+    // This involves network calls if the metadata partition is remote.
     let mut results: Vec<(BookMetadata, usize)> = Vec::new();
     for (book_id, score) in book_scores.iter() {
         if let Some(metadata) = books_map.get(book_id).await {
@@ -42,6 +53,7 @@ pub async fn search(
         }
     }
 
+    // Ranking Phase: Sort by score descending.
     results.sort_by(|a, b| b.1.cmp(&a.1));
     results
 }

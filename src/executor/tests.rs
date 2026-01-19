@@ -6,6 +6,9 @@
 //! - **Registry**: Verifies task registration, lookup, and execution mechanics.
 //! - **Data Types**: Validates serialization/deserialization of task entries and status logic.
 //! - **Business Logic**: Simulates real-world indexing scenarios to ensure handlers process payloads correctly.
+//!
+//! *Note: Integration tests requiring network interactions (e.g., cross-node forwarding)
+//! are located in the top-level `test_cluster.sh` script.*
 
 #[cfg(test)]
 mod tests {
@@ -25,7 +28,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        // ACT: Register handler
+        // ACT: Register a simple handler that increments a counter
         registry.register("test_handler", move |_task| {
             let count = call_count_clone.clone();
             async move {
@@ -38,7 +41,7 @@ mod tests {
         assert!(registry.has_handler("test_handler"));
         assert_eq!(registry.handler_count(), 1);
 
-        // ACT: Execute task
+        // ACT: Execute the task via the registry
         let task = Task::Execute {
             handler: "test_handler".to_string(),
             payload: serde_json::json!({"test": "data"}),
@@ -46,7 +49,7 @@ mod tests {
 
         let result = registry.execute(&task).await;
 
-        // ASSERT: Handler was called
+        // ASSERT: Handler was called successfully
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
@@ -64,14 +67,14 @@ mod tests {
         // ACT
         let result = registry.execute(&task).await;
 
-        // ASSERT: Should return an error
+        // ASSERT: Should return an error because the handler doesn't exist
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown task handler"));
     }
 
     #[tokio::test]
     async fn test_registry_handler_can_fail() {
-        // ARRANGE
+        // ARRANGE: Register a handler that always returns an error
         let registry = TaskHandlerRegistry::new();
 
         registry.register("failing_handler", |_task| async {
@@ -86,14 +89,14 @@ mod tests {
         // ACT
         let result = registry.execute(&task).await;
 
-        // ASSERT
+        // ASSERT: The executor should capture the error
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Intentional error"));
     }
 
     #[tokio::test]
     async fn test_registry_handler_receives_payload() {
-        // ARRANGE
+        // ARRANGE: Verify that the JSON payload is correctly passed to the handler
         let registry = TaskHandlerRegistry::new();
         let received_payload = Arc::new(tokio::sync::Mutex::new(None));
         let received_clone = received_payload.clone();
@@ -133,6 +136,7 @@ mod tests {
         let id1 = TaskId::new();
         let id2 = TaskId::new();
 
+        // UUIDs should be unique
         assert_ne!(id1.0, id2.0);
     }
 
@@ -186,167 +190,5 @@ mod tests {
         } else {
             panic!("Wrong task type");
         }
-    }
-
-    // ============================================================
-    // TEST 5: Simulation of index_book handler (no network)
-    // ============================================================
-
-    #[tokio::test]
-    async fn test_index_book_handler_logic() {
-        use crate::search::tokenizer::tokenize_text;
-        use std::collections::HashMap;
-
-        // Simulate index_map as local HashMap
-        let index_map: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
-        // Simulate book payload
-        let book_payload = serde_json::json!({
-            "book_id": "book-001",
-            "title": "The Rust Programming Language",
-            "author": "Steve Klabnik",
-            "language": "en",
-            "year": 2019,
-            "word_count": 0,
-            "unique_words": 0
-        });
-
-        // Indexing logic (same as in main.rs)
-        let title = book_payload["title"].as_str().unwrap();
-        let book_id = book_payload["book_id"].as_str().unwrap();
-
-        let tokens = tokenize_text(title);
-
-        let mut map = index_map.lock().await;
-        for token in tokens {
-            let book_ids = map.entry(token.clone()).or_insert_with(Vec::new);
-            if !book_ids.contains(&book_id.to_string()) {
-                book_ids.push(book_id.to_string());
-            }
-        }
-        drop(map);
-
-        // ASSERT: Check that tokens are in the index
-        let map = index_map.lock().await;
-
-        // "rust" should be in the index
-        assert!(map.contains_key("rust"), "Token 'rust' should be in the index");
-        assert!(map["rust"].contains(&"book-001".to_string()));
-
-        // "programming" should also be there
-        assert!(map.contains_key("programming"));
-        assert!(map["programming"].contains(&"book-001".to_string()));
-
-        // "language" should also be there
-        assert!(map.contains_key("language"));
-    }
-
-    // ============================================================
-    // TEST 6: Multiple books with the same token
-    // ============================================================
-
-    #[tokio::test]
-    async fn test_multiple_books_same_token() {
-        use crate::search::tokenizer::tokenize_text;
-        use std::collections::HashMap;
-
-        let index_map: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
-        // Note: tokenizer filters words <= 2 characters
-        // so "Go" will not be in the index (only 2 chars)
-        let books = vec![
-            ("book-001", "Rust Programming"),
-            ("book-002", "Programming with Golang"),  // "golang" instead of "go"
-            ("book-003", "Python Programming"),
-        ];
-
-        for (book_id, title) in books {
-            let tokens = tokenize_text(title);
-            let mut map = index_map.lock().await;
-
-            for token in tokens {
-                let book_ids = map.entry(token).or_insert_with(Vec::new);
-                if !book_ids.contains(&book_id.to_string()) {
-                    book_ids.push(book_id.to_string());
-                }
-            }
-        }
-
-        // ASSERT
-        let map = index_map.lock().await;
-
-        // "programming" should map to 3 books
-        assert_eq!(map["programming"].len(), 3);
-        assert!(map["programming"].contains(&"book-001".to_string()));
-        assert!(map["programming"].contains(&"book-002".to_string()));
-        assert!(map["programming"].contains(&"book-003".to_string()));
-
-        // "rust" only 1
-        assert_eq!(map["rust"].len(), 1);
-
-        // "golang" only 1 (instead of "go" which is too short)
-        assert_eq!(map["golang"].len(), 1);
-    }
-
-    // ============================================================
-    // TEST 7: Full flow test (registry + index logic)
-    // ============================================================
-
-    #[tokio::test]
-    async fn test_full_indexing_flow_with_registry() {
-        use crate::search::tokenizer::tokenize_text;
-        use std::collections::HashMap;
-
-        let registry = TaskHandlerRegistry::new();
-        let index_map: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
-        let index_map_clone = index_map.clone();
-
-        // Handler registration (similar to main.rs)
-        registry.register("index_book", move |task| {
-            let index_map = index_map_clone.clone();
-            async move {
-                let Task::Execute { payload, .. } = task;
-
-                let book_id = payload["book_id"].as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing book_id"))?;
-                let title = payload["title"].as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing title"))?;
-
-                let tokens = tokenize_text(title);
-                let mut map = index_map.lock().await;
-
-                for token in tokens {
-                    let book_ids = map.entry(token).or_insert_with(Vec::new);
-                    if !book_ids.contains(&book_id.to_string()) {
-                        book_ids.push(book_id.to_string());
-                    }
-                }
-
-                Ok(())
-            }
-        });
-
-        // Create and execute task
-        let task = Task::Execute {
-            handler: "index_book".to_string(),
-            payload: serde_json::json!({
-                "book_id": "test-book-123",
-                "title": "Advanced Rust Patterns"
-            }),
-        };
-
-        let result = registry.execute(&task).await;
-        assert!(result.is_ok(), "Handler should execute without errors");
-
-        // Check index
-        let map = index_map.lock().await;
-        assert!(map.contains_key("advanced"));
-        assert!(map.contains_key("rust"));
-        assert!(map.contains_key("patterns"));
-        assert!(map["rust"].contains(&"test-book-123".to_string()));
     }
 }

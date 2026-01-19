@@ -1,7 +1,8 @@
 //! Ingestion API Handlers
 //!
 //! Axum route handlers that expose the ingestion service functionality via HTTP.
-//! These endpoints are responsible for the initial processing of external content.
+//! These endpoints are responsible for the initial processing of external content and
+//! coordinating with the storage and executor subsystems.
 
 use super::types::{IndexTaskPayload, IngestResponse, IngestStatusResponse, RawDocument};
 use crate::executor::queue::DistributedQueue;
@@ -22,7 +23,7 @@ const END_MARKER: &str = "*** END OF THE PROJECT GUTENBERG EBOOK";
 /// Primary Ingestion Endpoint.
 ///
 /// Orchestrates the entire lifecycle of a new document:
-/// 1. **Checks Datalake**: Returns immediately if the book already exists.
+/// 1. **Checks Datalake**: Returns immediately if the book already exists (idempotency).
 /// 2. **Fetches**: Downloads the text file from the Project Gutenberg cache.
 /// 3. **Parses**: Splits the text into header/body and extracts metadata (title, author, year).
 /// 4. **Persists**: Stores the `RawDocument` in the distributed Datalake and metadata in the book registry.
@@ -38,6 +39,7 @@ pub async fn handle_ingest_gutenberg(
         book_id, book_id
     );
 
+    // 1. Idempotency Check
     if datalake.get(&book_id).await.is_some() {
         return (
             StatusCode::OK,
@@ -49,6 +51,7 @@ pub async fn handle_ingest_gutenberg(
         );
     }
 
+    // 2. Download Content
     let text = match fetch_gutenberg_text(&source_url).await {
         Ok(text) => text,
         Err(err) => {
@@ -64,6 +67,7 @@ pub async fn handle_ingest_gutenberg(
         }
     };
 
+    // 3. Heuristic Parsing
     let (header, body) = match split_gutenberg_text(&text) {
         Some(parts) => parts,
         None => {
@@ -82,6 +86,7 @@ pub async fn handle_ingest_gutenberg(
     let (word_count, unique_words) = compute_counts(&body);
     let metadata = parse_metadata(&header, &book_id, word_count, unique_words);
 
+    // 4. Persistence (Datalake + Metadata Store)
     let raw_doc = RawDocument {
         book_id: book_id.clone(),
         header,
@@ -105,6 +110,9 @@ pub async fn handle_ingest_gutenberg(
         tracing::error!("Failed to store metadata for {}: {}", book_id, err);
     }
 
+    // 5. Schedule Indexing Task
+    // We hand off the heavy lifting (tokenization/inverted index update) to the Executor
+    // to keep the ingestion API responsive
     let task = Task::Execute {
         handler: "index_document".to_string(),
         payload: serde_json::to_value(IndexTaskPayload {
@@ -172,6 +180,9 @@ fn split_gutenberg_text(text: &str) -> Option<(String, String)> {
     Some((header.trim().to_string(), body.trim().to_string()))
 }
 
+/// Extracts metadata fields (Title, Author, Release Date) from the header section.
+///
+/// Iterates line-by-line looking for standard Project Gutenberg prefixes.
 fn parse_metadata(
     header: &str,
     book_id: &str,

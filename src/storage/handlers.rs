@@ -1,7 +1,9 @@
 //! Storage API Handlers
 //!
 //! HTTP endpoints that expose the `DistributedMap` capabilities to the network.
-//! These handlers translate HTTP requests into internal storage calls.
+//! These handlers translate HTTP requests into internal storage calls (`put`, `get`, `replicate`).
+//!
+//! They act as the bridge between the Axum web framework and the logic in `memory.rs`.
 
 use axum::{
     Json,
@@ -19,6 +21,10 @@ use super::protocol::{
     ReplicateRequest,
 };
 
+/// Public PUT handler.
+///
+/// Accepts a key-value pair and initiates the write process.
+/// This endpoint figures out if the write should be handled locally or forwarded.
 pub async fn handle_put<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Json(req): Json<PutRequest>,
@@ -50,6 +56,7 @@ where
         }
     };
 
+    // Delegate to the DistributedMap logic (Partition -> Local/Forward -> Replicate)
     match map.put_with_op(key, value, req.op_id).await {
         Ok(_) => (StatusCode::OK, Json(PutResponse { success: true })),
         Err(e) => {
@@ -62,6 +69,10 @@ where
     }
 }
 
+/// Public GET handler.
+///
+/// Retrieves a value for a given key.
+/// If the data is not local, the `DistributedMap` will transparently fetch it from the cluster.
 pub async fn handle_get<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Path(key_str): Path<String>,
@@ -102,6 +113,10 @@ where
     }
 }
 
+/// Internal GET handler.
+///
+/// Serves data *only* from the local store. Used by other nodes when they want
+/// to fetch data specifically from *this* node (e.g., during a remote fetch or sync).
 pub async fn handle_get_internal<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Path(key_str): Path<String>,
@@ -246,6 +261,9 @@ where
     }
 }
 
+/// Internal Endpoint: Bulk data export for a specific partition.
+///
+/// Used by the Anti-Entropy mechanism to synchronize nodes that have missing data.
 pub async fn handle_partition_dump<K, V>(
     Extension(map): Extension<Arc<DistributedMap<K, V>>>,
     Path(partition): Path<u32>,

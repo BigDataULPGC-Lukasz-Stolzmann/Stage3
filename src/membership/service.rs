@@ -2,7 +2,7 @@
 //!
 //! Manages the lifecycle of the local node and maintains the `members` list (the local view of the cluster).
 //! Runs three concurrent background loops:
-//! 1. **Gossip Loop**: Randomly probes other nodes.
+//! 1. **Gossip Loop**: Randomly probes other nodes to disseminate state.
 //! 2. **Receive Loop**: Handles incoming UDP messages.
 //! 3. **Failure Detection**: Monitors timestamps to transition nodes from Suspect to Dead.
 
@@ -17,27 +17,39 @@ use tracing::info;
 
 use super::types::{GossipMessage, Node, NodeId, NodeState};
 
+// Configuration constants for the protocol timing.
 const GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
 const FAILURE_DETECTION_INTERVAL: Duration = Duration::from_secs(2);
 const SUSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The main service struct responsible for cluster membership logic.
 pub struct MembershipService {
+    /// Information about the current running node.
     pub local_node: Node,
+    /// Thread-safe map of all known members in the cluster.
     pub members: Arc<DashMap<NodeId, Node>>,
+    /// UDP socket for sending and receiving gossip messages.
     socket: Arc<UdpSocket>,
+    /// The local incarnation number, protected by a read-write lock.
+    /// Incremented when this node needs to refute a suspicion about itself.
     incarnation: Arc<RwLock<u64>>,
 }
 
 impl MembershipService {
     /// Initializes the membership service.
     ///
-    /// If `seed_nodes` are provided, it immediately attempts to `Join` the existing cluster.
-    /// Binds to a UDP port for gossip (internal) and calculates the HTTP port (external API) based on it.
+    /// - Binds to the specified UDP address.
+    /// - Initializes the local node state with incarnation 1.
+    /// - If `seed_nodes` are provided, it immediately attempts to `Join` the existing cluster
+    ///   by sending a `Join` message to each seed.
     pub async fn new(bind_addr: SocketAddr, seed_nodes: Vec<SocketAddr>) -> Result<Arc<Self>> {
         let socket = UdpSocket::bind(bind_addr).await?;
         let incarnation_counter = Arc::new(RwLock::new(1));
         let current_inc = *incarnation_counter.read().await;
+        
+        // Construct the local node definition.
+        // Note: HTTP port is conventionally derived as gossip_port + 1000.
         let local_node = Node {
             id: NodeId::new(),
             gossip_addr: bind_addr,
@@ -46,8 +58,11 @@ impl MembershipService {
             incarnation: current_inc,
             last_seen: Some(Instant::now()),
         };
+        
         let members = Arc::new(DashMap::new());
         members.insert(local_node.id.clone(), local_node.clone());
+        
+        // Bootstrap phase: Contact seed nodes if any.
         if !seed_nodes.is_empty() {
             info!("Joining cluster via {} seed node(s)", seed_nodes.len());
 
@@ -70,6 +85,12 @@ impl MembershipService {
         }))
     }
 
+    /// Starts the background tasks for the protocol.
+    ///
+    /// Spawns three independent Tokio tasks:
+    /// 1. `gossip_loop`: Sends periodic heartbeats.
+    /// 2. `receive_loop`: Listens for incoming UDP packets.
+    /// 3. `failure_detection_loop`: Checks for timed-out nodes.
     pub async fn start(self: Arc<Self>) {
         tracing::info!("Starting membership service...");
 
@@ -97,10 +118,13 @@ impl MembershipService {
         tracing::info!("All background tasks started");
     }
 
+    /// Retrieves a copy of a member's state by its ID.
     pub fn get_member(&self, node_id: &NodeId) -> Option<Node> {
         self.members.get(node_id).map(|entry| entry.clone())
     }
 
+    /// Returns a list of all members currently considered `Alive`.
+    /// Useful for other services (like Storage or Executor) to know available peers.
     pub fn get_alive_members(&self) -> Vec<Node> {
         self.members
             .iter()
@@ -120,6 +144,7 @@ impl MembershipService {
         loop {
             interval.tick().await;
 
+            // Filter for valid targets (not self, not dead)
             let alive_members: Vec<Node> = self
                 .members
                 .iter()
@@ -134,6 +159,7 @@ impl MembershipService {
                 continue;
             }
 
+            // Pick a random target to ping
             use rand::Rng;
             let idx = rand::thread_rng().gen_range(0..alive_members.len());
             let target = &alive_members[idx];
@@ -156,8 +182,10 @@ impl MembershipService {
         }
     }
 
+    /// Continuous loop that listens for incoming UDP messages.
+    /// Deserializes the binary payload and dispatches to `handle_message`.
     async fn receive_loop(self: Arc<Self>) {
-        let mut buf = vec![0u8; 65536];
+        let mut buf = vec![0u8; 65536]; // 64KB buffer
 
         loop {
             match self.socket.recv_from(&mut buf).await {
@@ -179,6 +207,7 @@ impl MembershipService {
         }
     }
 
+    /// Dispatches incoming messages to their specific handlers.
     async fn handle_message(&self, msg: GossipMessage, src: SocketAddr) -> Result<()> {
         match msg {
             GossipMessage::Ping { from, incarnation } => {
@@ -215,6 +244,11 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Handles a `Ping` message.
+    ///
+    /// 1. Updates the sender's state in the local member list (incarnation check).
+    /// 2. If the sender is unknown, adds it to the cluster view.
+    /// 3. Responds immediately with an `Ack` containing a partial list of members.
     async fn handle_ping(
         &self,
         from: NodeId,
@@ -226,10 +260,12 @@ impl MembershipService {
         if let Some(mut member) = self.members.get_mut(&from) {
             member.last_seen = Some(Instant::now());
 
+            // Update incarnation if the sender has a newer version
             if from_incarnation > member.incarnation {
                 member.incarnation = from_incarnation;
             }
         } else {
+            // New node discovery
             tracing::info!("Discovered new member via ping: {:?} at {}", from, src);
 
             let new_node = Node {
@@ -244,6 +280,7 @@ impl MembershipService {
             self.members.insert(new_node.id.clone(), new_node);
         }
 
+        // Prepare Ack response
         let all_members: Vec<Node> = self
             .members
             .iter()
@@ -264,6 +301,10 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Handles an `Ack` message.
+    ///
+    /// 1. Marks the sender as Alive and updates its timestamp.
+    /// 2. Merges the piggybacked list of members (`members` vec) into the local view.
     async fn handle_ack(
         &self,
         from: NodeId,
@@ -290,6 +331,7 @@ impl MembershipService {
             }
         }
 
+        // Gossip dissemination: merge the received view into ours
         for member in members {
             self.merge_member(member).await;
         }
@@ -297,6 +339,11 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Merges a single node update into the local member list.
+    ///
+    /// Applies conflict resolution rules based on incarnation numbers:
+    /// - Higher incarnation number always wins.
+    /// - If equal incarnation, specific state overrides may apply.
     async fn merge_member(&self, new_member: Node) {
         match self.members.get_mut(&new_member.id) {
             Some(mut existing) => {
@@ -352,6 +399,7 @@ impl MembershipService {
                     }
                     if incarnation > existing.incarnation {
                         if existing.id == self.local_node.id {
+                            // SELF-DEFENSE: We are suspected, but we are alive!
                             tracing::info!(
                                 "Self-defense: Node {:?} at {} - refuting suspiction",
                                 node_id,
@@ -359,7 +407,7 @@ impl MembershipService {
                             );
                             let my_incarnation = {
                                 let mut inc = self.incarnation.write().await;
-                                *inc += 1;
+                                *inc += 1; // Increment incarnation to override the suspicion
                                 *inc
                             };
 
@@ -367,11 +415,13 @@ impl MembershipService {
                             existing.state = NodeState::Alive;
                             existing.last_seen = Some(Instant::now());
 
+                            // Broadcast Alive to clear our name
                             Some(GossipMessage::Alive {
                                 node_id: node_id.clone(),
                                 incarnation: my_incarnation,
                             })
                         } else {
+                            // Valid suspicion about another node
                             tracing::info!(
                                 "Node {:?} at {} suspected",
                                 existing.id,
@@ -384,7 +434,7 @@ impl MembershipService {
                             None
                         }
                     } else {
-                        None
+                        None // Old news, ignore
                     }
                 }
                 None => {
@@ -400,6 +450,10 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Handles an `Alive` message.
+    ///
+    /// If the incarnation number is higher than what we know, we mark the node as Alive.
+    /// This allows a node to recover from a `Suspect` state.
     async fn handle_alive(&self, node_id: NodeId, incarnation: u64) -> Result<()> {
         match self.members.get_mut(&node_id) {
             Some(mut existing) => {
@@ -420,6 +474,7 @@ impl MembershipService {
                 } else if incarnation == existing.incarnation
                     && existing.state == NodeState::Suspect
                 {
+                    // Refutation successful
                     tracing::info!(
                         "Node {:?} at {} successfully refuted suspiction",
                         existing.id,
@@ -438,6 +493,10 @@ impl MembershipService {
         Ok(())
     }
 
+    /// Handles a `Join` request from a new node.
+    ///
+    /// Adds the joining node to the local membership list.
+    /// The existence of this new node will be propagated via Gossip (piggybacked on Acks).
     async fn handle_join(&self, mut node: Node) -> Result<()> {
         tracing::info!("Node {:?} joining cluster at {}", node.id, node.gossip_addr);
 
@@ -450,8 +509,9 @@ impl MembershipService {
         Ok(())
     }
 
-    /// Monitors the `last_seen` timestamps of all members.
+    /// Background loop for failure detection.
     ///
+    /// Monitors the `last_seen` timestamps of all members.
     /// - If a node hasn't been seen for `SUSPECT_TIMEOUT`, it is marked as `Suspect`.
     /// - If it remains `Suspect` for `DEAD_TIMEOUT`, it is marked as `Dead` and removed from consideration.
     async fn failure_detection_loop(self: Arc<Self>) {
@@ -516,12 +576,16 @@ impl MembershipService {
                 }
             }
 
+            // Disseminate any suspicion events generated in this tick
             for msg in messages_to_broadcast {
                 self.broadcast_message(msg).await;
             }
         }
     }
 
+    /// Helper to broadcast a message to all known alive members.
+    /// Note: In a full SWIM implementation, this would be optimized.
+    /// Here it does a naive iteration over the member list.
     async fn broadcast_message(&self, msg: GossipMessage) {
         if let Ok(encoded) = bincode::serialize(&msg) {
             for entry in self.members.iter() {

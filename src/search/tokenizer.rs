@@ -6,11 +6,13 @@
 use regex::Regex;
 use std::collections::HashSet;
 
-/// Tokenizes a full document body.
+/// Tokenizes a full document body for indexing.
 ///
-/// - Normalizes text to lowercase.
-/// - Filters out words with length <= 2.
-/// - Returns a `HashSet` to ensure only unique terms are stored in the index for a specific doc.
+/// # Operations
+/// - **Normalization**: Converts all text to lowercase to ensure case-insensitive matching.
+/// - **Filtering**: Removes words with length <= 2 (e.g., "is", "at", "to") to reduce index size.
+/// - **Deduplication**: Returns a `HashSet` to ensure only unique terms are stored in the index
+///   for a specific document (Boolean model optimization).
 pub fn tokenize_text(text: &str) -> HashSet<String> {
     let re = Regex::new(r"\b[a-zA-Z]+\b").unwrap();
     re.find_iter(&text.to_lowercase())
@@ -22,7 +24,13 @@ pub fn tokenize_text(text: &str) -> HashSet<String> {
 /// Tokenizes a user search query.
 ///
 /// Similar to `tokenize_text`, but returns a `Vec` to allow the search engine
-/// to potentially weigh repeated terms higher (though current implementation is boolean).
+/// to potentially consider term frequency in the query (although the current engine uses a boolean-like match).
+///
+/// # Operations
+/// - **Normalization**: Converts text to lowercase.
+/// - **Splitting**: Splits by whitespace.
+/// - **Sanitization**: Trims non-alphanumeric characters from the edges of words.
+/// - **Filtering**: Removes short words (length <= 2).
 pub fn tokenize_query(query: &str) -> Vec<String> {
     query
         .to_lowercase()
@@ -35,4 +43,3 @@ pub fn tokenize_query(query: &str) -> Vec<String> {
         .filter(|word| !word.is_empty())
         .collect()
 }
-

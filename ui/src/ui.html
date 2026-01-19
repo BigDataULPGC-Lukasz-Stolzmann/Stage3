@@ -1,10 +1,3 @@
-/**
-     * Frontend Controller
-     * * Manages application state, API communication, and UI updates.
-     * The UI acts as a proxy client: it sends requests to the local `main.rs` web server,
-     * which then forwards them to the appropriate nodes in the cluster.
-     */
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -13,6 +6,9 @@
   <title>Distributed Search UI</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
+    /* Design System Variables 
+       Using a clean, technical color palette appropriate for engineering dashboards.
+    */
     :root {
       --bg: #f6f7fb;
       --card: #ffffff;
@@ -34,6 +30,7 @@
       padding: 28px 18px 60px;
     }
 
+    /* Layout Containers */
     .wrap {
       max-width: 1100px;
       margin: 0 auto;
@@ -41,12 +38,9 @@
       gap: 20px;
     }
 
-    header {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
+    /* ... (CSS styles for cards, tabs, and inputs omitted for brevity but preserved in logic) ... */
+    
+    header { display: flex; flex-direction: column; gap: 8px; }
     h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); }
     .subtitle { color: var(--muted); font-size: 14px; }
 
@@ -268,7 +262,6 @@
           <pre id="searchOutput"></pre>
         </section>
       </div>
-
     </div>
 
     <div id="tab-cluster" class="tab-content">
@@ -339,6 +332,7 @@
   </div>
 
   <script>
+    // --- State Initialization ---
     const ingestStatus = document.getElementById("ingestStatus");
     const ingestOutput = document.getElementById("ingestOutput");
     const searchStatus = document.getElementById("searchStatus");
@@ -348,6 +342,7 @@
     const nodeInput = document.getElementById("nodeUrl");
     const nodesContainer = document.getElementById("nodesContainer");
 
+    // Load saved node URL or default to localhost
     const defaultNode = localStorage.getItem("nodeUrl") || "http://localhost";
     nodeInput.value = defaultNode;
 
@@ -355,6 +350,9 @@
     let benchmarkRunning = false;
     let benchmarkResults = { ingest: null, search: null, loadDist: null };
 
+    // --- UI Logic ---
+
+    // Handles tab switching logic (hiding/showing content sections)
     function switchTab(tab) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -373,8 +371,10 @@
     }
 
     // --- API Interactions ---
-    // Wrappers for the backend proxy endpoints (/api/ingest, /api/search).
-    // These functions handle individual user actions (form submissions) and update the result views.
+    // These functions call the local proxy server (`/api/...`), which then forwards
+    // the request to the cluster. This avoids CORS issues in the browser.
+
+    // Triggers document ingestion on the cluster
     async function ingest() {
       const id = document.getElementById("bookId").value.trim();
       if (!id) return setStatus(ingestStatus, "Provide an id", true);
@@ -390,6 +390,7 @@
       }
     }
 
+    // Checks if a specific book ID exists in the datalake
     async function checkStatus() {
       const id = document.getElementById("bookId").value.trim();
       if (!id) return setStatus(ingestStatus, "Provide an id", true);
@@ -404,6 +405,7 @@
       }
     }
 
+    // Performs a search query against the cluster
     async function search() {
       const query = document.getElementById("query").value.trim();
       const limit = document.getElementById("limit").value.trim() || "5";
@@ -426,18 +428,16 @@
       el.classList.toggle("ok", !isError);
     }
 
+    // --- Monitoring Logic ---
+
     function renderStats(stats) {
       if (stats.nodes && stats.nodes.length > 0) {
         fetchAllNodeStats(stats.nodes);
       }
     }
 
-    /**
-     * Metrics Poller
-     * * Periodically fetches internal cluster state from `/api/stats`.
-     * This function is responsible for keeping the "Cluster Health" and 
-     * "Topology" sections in sync with the live system.
-     */
+    // Polls the stats endpoint to update the Cluster Stats tab.
+    // Fetches high-level metrics (CPU, Memory, Partition counts) from all known nodes.
     async function pollStats() {
       try {
         const res = await fetch(`/api/stats?node=${encodeURIComponent(currentNode())}`);
@@ -452,8 +452,9 @@
     }
 
     pollStats();
-    setInterval(pollStats, 4000);
+    setInterval(pollStats, 4000); // Auto-refresh every 4 seconds
 
+    // Aggregates stats from all nodes found in the gossip list
     async function fetchAllNodeStats(nodes) {
       const results = await Promise.all(
         nodes.map(async (n) => {
@@ -500,6 +501,8 @@
         </div>`;
     }
 
+    // --- Benchmark Helpers ---
+
     function calcStats(times) {
       if (!times.length) return {};
       const sorted = [...times].sort((a, b) => a - b);
@@ -537,15 +540,8 @@
         .join("");
     }
 
-    /**
-     * Ingestion Load Generator
-     * * Executes a client-side stress test by generating synthetic book data
-     * and sending concurrent requests to the cluster.
-     * * It measures:
-     * - Throughput (Documents per second)
-     * - Latency (Average response time)
-     * - Reliability (Success vs Failure rate)
-     */
+    // --- Load Generators ---
+
     async function runIngestBenchmark() {
       if (benchmarkRunning) return;
       benchmarkRunning = true;
@@ -596,12 +592,6 @@
       benchmarkRunning = false;
     }
 
-    /**
-     * Search Load Generator
-     * * Simulates high-traffic read operations.
-     * Sends a predefined set of queries to the cluster to measure query latency
-     * and system stability under load.
-     */
     async function runSearchBenchmark() {
       if (benchmarkRunning) return;
       benchmarkRunning = true;
@@ -698,9 +688,8 @@
       benchmarkRunning = false;
     }
 
-    // --- Visualization ---
-    // Configurations for Chart.js to render real-time latency histograms
-    // and throughput graphs based on benchmark data.
+    // --- Charting & Exports ---
+
     function updateIngestChart(times) {
       const ctx = document.getElementById("ingestChart").getContext("2d");
       if (ingestChart) ingestChart.destroy();
