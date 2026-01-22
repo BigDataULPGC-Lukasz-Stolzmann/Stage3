@@ -20,13 +20,13 @@
 //! cargo run -- --bind 127.0.0.1:5001 --seed 127.0.0.1:5000
 //! ```
 
-use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::StatusCode;
+use axum::Json;
 use axum::{
-    Router,
     extract::Extension,
     routing::{get, post},
+    Router,
 };
 use distributed_cluster::executor::executor::TaskExecutor;
 use distributed_cluster::executor::handlers::{
@@ -40,26 +40,26 @@ use distributed_cluster::executor::protocol::{
 use distributed_cluster::executor::queue::DistributedQueue;
 use distributed_cluster::executor::registry::TaskHandlerRegistry;
 use distributed_cluster::executor::types::Task;
-use distributed_cluster::membership::service::MembershipService;
 use distributed_cluster::ingestion::handlers::{handle_ingest_gutenberg, handle_ingest_status};
 use distributed_cluster::ingestion::types::RawDocument;
-use distributed_cluster::search::handlers::{handle_search, handle_create_book};
+use distributed_cluster::membership::service::MembershipService;
+use distributed_cluster::search::handlers::{handle_create_book, handle_search};
 use distributed_cluster::search::tokenizer::tokenize_text;
 use distributed_cluster::search::types::BookMetadata;
 use distributed_cluster::storage::handlers::*;
 use distributed_cluster::storage::memory::DistributedMap;
 use distributed_cluster::storage::partitioner::PartitionManager;
 use distributed_cluster::storage::protocol::{
+    ForwardPutRequest, GetResponse, PutRequest, PutResponse, ReplicateRequest,
     ENDPOINT_FORWARD_PUT, ENDPOINT_GET, ENDPOINT_GET_INTERNAL, ENDPOINT_PARTITION_DUMP,
-    ENDPOINT_PUT, ENDPOINT_REPLICATE, ForwardPutRequest, GetResponse, PutRequest, PutResponse,
-    ReplicateRequest,
+    ENDPOINT_PUT, ENDPOINT_REPLICATE,
 };
-use serde::Serialize;
 use serde::de::DeserializeOwned;
-use sysinfo::System;
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{collections::HashSet, hash::Hash, str::FromStr};
+use sysinfo::System;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -118,7 +118,6 @@ async fn main() -> anyhow::Result<()> {
     let membership = MembershipService::new(bind_addr, seed_nodes).await?;
     tracing::info!("Node ID: {:?}", membership.local_node.id);
 
-    
     let replication_factor = std::env::var("REPLICATION_FACTOR")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -127,7 +126,8 @@ async fn main() -> anyhow::Result<()> {
     // --- 3. Initialize Storage Layer ---
     // The PartitionManager is the "brain" of the storage, deciding which node owns which key.
     // It is shared across all storage maps to ensure consistent topology.
-    let partitioner = PartitionManager::new_with_replication(membership.clone(), replication_factor);
+    let partitioner =
+        PartitionManager::new_with_replication(membership.clone(), replication_factor);
 
     // Distributed Map for Book Metadata (Title, Author, Year, etc.)
     let books = Arc::new(DistributedMap::<String, BookMetadata>::new_with_base(
@@ -163,8 +163,6 @@ async fn main() -> anyhow::Result<()> {
 
     // --- 4. Register Task Handlers ---
     // Here we define the actual logic for "index_document".
-    // Ideally, this logic would be in the `search` module, but it's wired here
-    // to have access to the specific `index_map` and `datalake` instances.
     task_registry.register("index_document", move |task| {
         let index_map = index_map_clone.clone();
         let datalake = datalake_clone.clone();
@@ -181,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
 
             // 2. Tokenize the text
             let tokens = tokenize_text(&raw_doc.body);
-            
+
             // 3. Update the Inverted Index for every token
             for token in tokens {
                 let mut book_ids = index_map.get(&token).await.unwrap_or_default();
@@ -201,7 +199,10 @@ async fn main() -> anyhow::Result<()> {
     let worker_count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    tracing::info!("Starting {} task workers (auto-detected CPU cores)", worker_count);
+    tracing::info!(
+        "Starting {} task workers (auto-detected CPU cores)",
+        worker_count
+    );
 
     // --- 5. Start Worker Pool ---
     // Spawns the background workers that will pull tasks from the DistributedQueue
@@ -304,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(index_map.clone()));
 
     // --- 7. Spawn Background Services ---
-    
+
     // Start Membership Service (Gossip Loop)
     let service_clone = membership.clone();
     tokio::spawn(async move {
@@ -708,7 +709,10 @@ async fn handle_replicate_book(
 async fn handle_partition_dump_book(
     map: Extension<Arc<DistributedMap<String, BookMetadata>>>,
     partition: Path<u32>,
-) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+) -> (
+    StatusCode,
+    Json<distributed_cluster::storage::protocol::PartitionDumpResponse>,
+) {
     handle_partition_dump::<String, BookMetadata>(map, partition).await
 }
 
@@ -750,7 +754,10 @@ async fn handle_replicate_datalake(
 async fn handle_partition_dump_datalake(
     map: Extension<Arc<DistributedMap<String, RawDocument>>>,
     partition: Path<u32>,
-) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+) -> (
+    StatusCode,
+    Json<distributed_cluster::storage::protocol::PartitionDumpResponse>,
+) {
     handle_partition_dump::<String, RawDocument>(map, partition).await
 }
 
@@ -792,6 +799,9 @@ async fn handle_replicate_index(
 async fn handle_partition_dump_index(
     map: Extension<Arc<DistributedMap<String, Vec<String>>>>,
     partition: Path<u32>,
-) -> (StatusCode, Json<distributed_cluster::storage::protocol::PartitionDumpResponse>) {
+) -> (
+    StatusCode,
+    Json<distributed_cluster::storage::protocol::PartitionDumpResponse>,
+) {
     handle_partition_dump::<String, Vec<String>>(map, partition).await
 }
